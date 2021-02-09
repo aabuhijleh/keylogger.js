@@ -6,13 +6,13 @@
             "cflags_cc!": ["-fno-exceptions"],
             "conditions":[
                 ["OS=='mac'", {
-                "sources": [ "src/macOS/push-to-talk.cc" ],
-                "xcode_settings": {
-                    "OTHER_CPLUSPLUSFLAGS": ["-std=c++11", "-stdlib=libc++", "-mmacosx-version-min=10.10"],
-                    "OTHER_LDFLAGS": ["-framework CoreFoundation -framework IOKit -framework AppKit"]
-                },
+                    "sources": ["src/macOS/push-to-talk.cc"],
+                    "xcode_settings": {
+                        "OTHER_CPLUSPLUSFLAGS": ["-std=c++11", "-stdlib=libc++", "-mmacosx-version-min=10.10"],
+                        "OTHER_LDFLAGS": ["-framework CoreFoundation -framework IOKit -framework AppKit"]
+                    },
                 }],
-                ["OS!='mac'", {
+                ["OS=='win'", {
                     "sources": ["src/windows/push-to-talk.cc"]
                 }]
             ],

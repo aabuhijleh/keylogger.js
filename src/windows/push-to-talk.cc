@@ -6,8 +6,8 @@
 #include <iostream>
 #include <sstream>
 
-// Declare the TSFN
 Napi::ThreadSafeFunction tsfn;
+std::thread nativeThread;
 
 // Create a native callback function to be invoked by the TSFN
 auto callback = [](Napi::Env env, Napi::Function jsCallback, int* value) {
@@ -38,56 +38,62 @@ void Start(const Napi::CallbackInfo& info) {
       info[0].As<Napi::Function>(),  // JavaScript function called asynchronously
       "Keyboard Events",             // Name
       0,                             // Unlimited queue
-      1                              // Only one thread will use this initially
-    );
-}
+      1,                             // Only one thread will use this initially
+      [](Napi::Env) {                // Finalizer used to clean threads up
+          nativeThread.join();
+      });
 
-// This is the callback function. Consider it the event that is raised when, in this case,
-// a key is pressed.
-LRESULT __stdcall HookCallback(int nCode, WPARAM wParam, LPARAM lParam) {
-    std::cout << "HookCallback is called" << std::endl;
+    nativeThread = std::thread([] {
+        // This is the callback function. Consider it the event that is raised when, in this case,
+        // a key is pressed.
+        static auto HookCallback = [](int nCode, WPARAM wParam, LPARAM lParam) -> LRESULT {
+            if (nCode >= 0) {
+                // the action is valid: HC_ACTION.
+                if (wParam == WM_KEYDOWN) {
+                    // lParam is the pointer to the struct containing the data needed, so cast and
+                    // assign it to kdbStruct.
+                    kbdStruct = *((KBDLLHOOKSTRUCT*)lParam);
 
-    if (nCode >= 0) {
-        // the action is valid: HC_ACTION.
-        if (wParam == WM_KEYDOWN) {
-            // lParam is the pointer to the struct containing the data needed, so cast and assign it
-            // to kdbStruct.
-            kbdStruct = *((KBDLLHOOKSTRUCT*)lParam);
+                    // Send (kbdStruct.vkCode) to JS world via "start" function callback parameter
+                    int* value = new int(kbdStruct.vkCode);
+                    napi_status status = tsfn.BlockingCall(value, callback);
+                    if (status != napi_ok) {
+                        std::cout << "BlockingCall is not ok" << std::endl;
+                    }
+                }
+            }
 
-            // Send (kbdStruct.vkCode) to JS world via "start" function callback parameter
-            int* value = new int(kbdStruct.vkCode);
-            napi_status status = tsfn.BlockingCall(value, callback);
-            if (status != napi_ok) {
-                std::cout << "BlockingCall is not ok" << std::endl;
+            // call the next hook in the hook chain. This is nessecary or your hook chain will
+            // break and the hook stops
+            return CallNextHookEx(_hook, nCode, wParam, lParam);
+        };
+
+        // Set the hook and set it to use the callback function above
+        // WH_KEYBOARD_LL means it will set a low level keyboard hook. More information about it at
+        // MSDN. The last 2 parameters are NULL, 0 because the callback function is in the same
+        // thread and window as the function that sets and releases the hook.
+        if (!(_hook = SetWindowsHookEx(WH_KEYBOARD_LL, HookCallback, NULL, 0))) {
+            LPCSTR a = "Failed to install hook!";
+            LPCSTR b = "Error";
+            MessageBox(NULL, a, b, MB_ICONERROR);
+        }
+
+        // Create a message loop
+        MSG msg;
+        BOOL bRet;
+        while ((bRet = GetMessage(&msg, NULL, 0, 0)) != 0) {
+            if (bRet == -1) {
+                // handle the error and possibly exit
+            } else {
+                TranslateMessage(&msg);
+                DispatchMessage(&msg);
             }
         }
-    }
-
-    // call the next hook in the hook chain. This is nessecary or your hook chain will break and the
-    // hook stops
-    return CallNextHookEx(_hook, nCode, wParam, lParam);
-}
-
-void SetHook() {
-    std::cout << "SetHook is called" << std::endl;
-
-    // Set the hook and set it to use the callback function above
-    // WH_KEYBOARD_LL means it will set a low level keyboard hook. More information about it at
-    // MSDN. The last 2 parameters are NULL, 0 because the callback function is in the same thread
-    // and window as the function that sets and releases the hook.
-    if (!(_hook = SetWindowsHookEx(WH_KEYBOARD_LL, HookCallback, NULL, 0))) {
-        LPCSTR a = "Failed to install hook!";
-        LPCSTR b = "Error";
-        MessageBox(NULL, a, b, MB_ICONERROR);
-    }
+    });
 }
 
 Napi::Object Init(Napi::Env env, Napi::Object exports) {
     exports.Set(Napi::String::New(env, "start"), Napi::Function::New(env, Start));
-
-    // set the hook
-    SetHook();
-
     return exports;
 }
 

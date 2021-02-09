@@ -1,0 +1,19 @@
+{
+  "name": "push-to-talk",
+  "version": "1.0.0",
+  "description": "a utility to capture key press and release",
+  "main": "index.js",
+  "gypfile": true,
+  "files": [
+    "index.js",
+    "build/Release/*.node"
+  ],
+  "scripts": {
+    "install": "node-gyp rebuild",
+    "start": "node ."
+  },
+  "dependencies": {
+    "bindings": "^1.5.0",
+    "node-addon-api": "^3.1.0"
+  }
+}

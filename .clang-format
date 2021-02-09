@@ -1,0 +1,9 @@
+BasedOnStyle: Google
+NamespaceIndentation: All
+IndentWidth: 4
+ContinuationIndentWidth: 2
+AllowShortBlocksOnASingleLine: false
+AllowShortFunctionsOnASingleLine: false
+AllowShortIfStatementsOnASingleLine: false
+AllowShortLoopsOnASingleLine: false
+ColumnLimit: 100

@@ -4,4 +4,6 @@ addon.start((keyCode) => {
   console.log("key is pressed:", keyCode);
 });
 
-console.log("testing...");
+setTimeout(() => {
+  addon.stop();
+}, 1000);

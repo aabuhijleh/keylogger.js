@@ -9,6 +9,8 @@
 Napi::ThreadSafeFunction tsfn;
 std::thread nativeThread;
 
+const UINT STOP_MESSAGE = WM_USER + 1;
+
 // Create a native callback function to be invoked by the TSFN
 auto callback = [](Napi::Env env, Napi::Function jsCallback, int* value) {
     // Call the JS callback
@@ -28,8 +30,6 @@ KBDLLHOOKSTRUCT kbdStruct;
 
 // Trigger the JS callback when a key is pressed
 void Start(const Napi::CallbackInfo& info) {
-    std::cout << "Start is called" << std::endl;
-
     Napi::Env env = info.Env();
 
     // Create a ThreadSafeFunction
@@ -58,7 +58,7 @@ void Start(const Napi::CallbackInfo& info) {
                     int* value = new int(kbdStruct.vkCode);
                     napi_status status = tsfn.BlockingCall(value, callback);
                     if (status != napi_ok) {
-                        std::cout << "BlockingCall is not ok" << std::endl;
+                        std::cout << "Failed to execute BlockingCall!" << std::endl;
                     }
                 }
             }
@@ -73,9 +73,7 @@ void Start(const Napi::CallbackInfo& info) {
         // MSDN. The last 2 parameters are NULL, 0 because the callback function is in the same
         // thread and window as the function that sets and releases the hook.
         if (!(_hook = SetWindowsHookEx(WH_KEYBOARD_LL, HookCallback, NULL, 0))) {
-            LPCSTR a = "Failed to install hook!";
-            LPCSTR b = "Error";
-            MessageBox(NULL, a, b, MB_ICONERROR);
+            std::cout << "Failed to install hook!" << std::endl;
         }
 
         // Create a message loop
@@ -84,6 +82,8 @@ void Start(const Napi::CallbackInfo& info) {
         while ((bRet = GetMessage(&msg, NULL, 0, 0)) != 0) {
             if (bRet == -1) {
                 // handle the error and possibly exit
+            } else if (msg.message == STOP_MESSAGE) {
+                PostQuitMessage(0);
             } else {
                 TranslateMessage(&msg);
                 DispatchMessage(&msg);
@@ -92,8 +92,24 @@ void Start(const Napi::CallbackInfo& info) {
     });
 }
 
+void Stop(const Napi::CallbackInfo& info) {
+    if (tsfn) {
+        // Terminate native thread
+        PostThreadMessageA(GetThreadId(nativeThread.native_handle()), STOP_MESSAGE, NULL, NULL);
+
+        // Release the TSFN
+        napi_status status = tsfn.Release();
+        if (status != napi_ok) {
+            std::cout << "Failed to release the TSFN!" << std::endl;
+        }
+
+        tsfn = NULL;
+    }
+}
+
 Napi::Object Init(Napi::Env env, Napi::Object exports) {
     exports.Set(Napi::String::New(env, "start"), Napi::Function::New(env, Start));
+    exports.Set(Napi::String::New(env, "stop"), Napi::Function::New(env, Stop));
     return exports;
 }
 

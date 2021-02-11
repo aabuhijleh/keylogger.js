@@ -26,12 +26,13 @@ void Start(const Napi::CallbackInfo& info) {
       0,                             // Unlimited queue
       1,                             // Only one thread will use this initially
       [](Napi::Env) {                // Finalizer used to clean threads up
+          std::cout << "trying to clean up native thread" << std::endl;
+          // TODO: somehow signal nativeThread to exit
           nativeThread.join();
+          std::cout << "native thread joined" << std::endl;
       });
 
     nativeThread = std::thread([] {
-        std::cout << "inside native thread" << std::endl;
-
         auto CGEventCallback = [](CGEventTapProxy proxy, CGEventType type, CGEventRef event,
                                   void* refcon) {
             if (type != kCGEventKeyDown && type != kCGEventFlagsChanged && type != kCGEventKeyUp) {

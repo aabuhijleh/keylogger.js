@@ -6,7 +6,7 @@
             "cflags_cc!": ["-fno-exceptions"],
             "conditions":[
                 ["OS=='mac'", {
-                    "sources": ["src/macOS/push-to-talk.cc"],
+                    "sources": ["src/macOS/push-to-talk.mm"],
                     "xcode_settings": {
                         "OTHER_CPLUSPLUSFLAGS": ["-std=c++11", "-stdlib=libc++", "-mmacosx-version-min=10.10"],
                         "OTHER_LDFLAGS": ["-framework CoreFoundation -framework IOKit -framework AppKit"]

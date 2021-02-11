@@ -9,6 +9,8 @@
 Napi::ThreadSafeFunction tsfn;
 std::thread nativeThread;
 
+BOOL shouldNativeThreadKeepRunning;
+
 void ReleaseTSFN();
 
 // Trigger the JS callback when a key is pressed
@@ -17,6 +19,8 @@ void Start(const Napi::CallbackInfo& info) {
 
     // Stop if already running
     ReleaseTSFN();
+
+    shouldNativeThreadKeepRunning = YES;
 
     // Create a ThreadSafeFunction
     tsfn = Napi::ThreadSafeFunction::New(
@@ -27,7 +31,7 @@ void Start(const Napi::CallbackInfo& info) {
       1,                             // Only one thread will use this initially
       [](Napi::Env) {                // Finalizer used to clean threads up
           std::cout << "trying to clean up native thread" << std::endl;
-          // TODO: somehow signal nativeThread to exit
+          shouldNativeThreadKeepRunning = NO;
           nativeThread.join();
           std::cout << "native thread joined" << std::endl;
       });
@@ -63,7 +67,10 @@ void Start(const Napi::CallbackInfo& info) {
         CFRunLoopAddSource(CFRunLoopGetCurrent(), runLoopSource, kCFRunLoopCommonModes);
         CGEventTapEnable(eventTap, true);
 
-        CFRunLoopRun();
+        NSRunLoop* theRL = [NSRunLoop currentRunLoop];
+        while (shouldNativeThreadKeepRunning && [theRL runMode:NSDefaultRunLoopMode
+                                                    beforeDate:[NSDate distantFuture]])
+            ;
     });
 }
 

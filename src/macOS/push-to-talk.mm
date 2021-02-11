@@ -68,8 +68,9 @@ void Start(const Napi::CallbackInfo& info) {
         CGEventTapEnable(eventTap, true);
 
         NSRunLoop* theRL = [NSRunLoop currentRunLoop];
-        while (shouldNativeThreadKeepRunning && [theRL runMode:NSDefaultRunLoopMode
-                                                    beforeDate:[NSDate distantFuture]])
+        while (shouldNativeThreadKeepRunning &&
+               [theRL runMode:NSDefaultRunLoopMode
+                   beforeDate:[NSDate dateWithTimeInterval:1.0 sinceDate:[NSDate date]]])
             ;
     });
 }

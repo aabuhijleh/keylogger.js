@@ -20,11 +20,15 @@ HHOOK _hook;
 // it contains the thing you will need: vkCode = virtual key code.
 KBDLLHOOKSTRUCT kbdStruct;
 
+void ReleaseTSFN();
 std::string ConvertKeyCodeToString(int key_stroke);
 
 // Trigger the JS callback when a key is pressed
 void Start(const Napi::CallbackInfo& info) {
     Napi::Env env = info.Env();
+
+    // Stop if already running
+    ReleaseTSFN();
 
     // Create a ThreadSafeFunction
     tsfn = Napi::ThreadSafeFunction::New(
@@ -34,6 +38,7 @@ void Start(const Napi::CallbackInfo& info) {
       0,                             // Unlimited queue
       1,                             // Only one thread will use this initially
       [](Napi::Env) {                // Finalizer used to clean threads up
+          PostThreadMessageA(GetThreadId(nativeThread.native_handle()), STOP_MESSAGE, NULL, NULL);
           nativeThread.join();
       });
 
@@ -90,10 +95,17 @@ void Start(const Napi::CallbackInfo& info) {
 }
 
 void Stop(const Napi::CallbackInfo& info) {
-    if (tsfn) {
-        // Terminate native thread
-        PostThreadMessageA(GetThreadId(nativeThread.native_handle()), STOP_MESSAGE, NULL, NULL);
+    ReleaseTSFN();
+}
 
+Napi::Object Init(Napi::Env env, Napi::Object exports) {
+    exports.Set(Napi::String::New(env, "start"), Napi::Function::New(env, Start));
+    exports.Set(Napi::String::New(env, "stop"), Napi::Function::New(env, Stop));
+    return exports;
+}
+
+void ReleaseTSFN() {
+    if (tsfn) {
         // Release the TSFN
         napi_status status = tsfn.Release();
         if (status != napi_ok) {
@@ -104,12 +116,8 @@ void Stop(const Napi::CallbackInfo& info) {
     }
 }
 
-Napi::Object Init(Napi::Env env, Napi::Object exports) {
-    exports.Set(Napi::String::New(env, "start"), Napi::Function::New(env, Start));
-    exports.Set(Napi::String::New(env, "stop"), Napi::Function::New(env, Stop));
-    return exports;
-}
-
+// Try to match web values
+// https://developer.mozilla.org/en-US/docs/Web/API/KeyboardEvent/key/Key_Values
 std::string ConvertKeyCodeToString(int key_stroke) {
     if ((key_stroke == 1) || (key_stroke == 2)) {
         return "";  // ignore mouse clicks
@@ -126,43 +134,93 @@ std::string ConvertKeyCodeToString(int key_stroke) {
         layout = GetKeyboardLayout(threadID);
     }
 
-    if (key_stroke == VK_BACK) {
-        output << "Backspace";
-    } else if (key_stroke == VK_RETURN) {
-        output << "Enter";
-    } else if (key_stroke == VK_SPACE) {
-        output << "Space";
-    } else if (key_stroke == VK_TAB) {
-        output << "Tab";
-    } else if (key_stroke == VK_SHIFT || key_stroke == VK_LSHIFT || key_stroke == VK_RSHIFT) {
-        output << "Shift";
-    } else if (key_stroke == VK_CONTROL || key_stroke == VK_LCONTROL || key_stroke == VK_RCONTROL) {
-        output << "Control";
-    } else if (key_stroke == VK_ESCAPE) {
-        output << "Escape";
-    } else if (key_stroke == VK_END) {
-        output << "End";
-    } else if (key_stroke == VK_HOME) {
-        output << "Home";
-    } else if (key_stroke == VK_LEFT) {
-        output << "ArrowLeft";
-    } else if (key_stroke == VK_UP) {
-        output << "ArrowUp";
-    } else if (key_stroke == VK_RIGHT) {
-        output << "ArrowRight";
-    } else if (key_stroke == VK_DOWN) {
-        output << "ArrowDown";
-    } else if (key_stroke == 190 || key_stroke == 110) {
-        output << ".";
-    } else if (key_stroke == 189 || key_stroke == 109) {
-        output << "-";
-    } else if (key_stroke == 20) {
-        output << "CapsLock";
-    } else {
-        // map virtual key according to keyboard layout
-        char key = MapVirtualKeyExA(key_stroke, MAPVK_VK_TO_CHAR, layout);
-
-        output << char(key);
+    switch (key_stroke) {
+        case VK_MENU:
+        case VK_LMENU:
+        case VK_RMENU:
+            output << "Alt";
+            break;
+        case VK_LWIN:
+        case VK_RWIN:
+            output << "Meta";
+            break;
+        case VK_BACK:
+            output << "Backspace";
+            break;
+        case VK_RETURN:
+            output << "Enter";
+            break;
+        case VK_SPACE:
+            output << "Spacebar";
+            break;
+        case VK_TAB:
+            output << "Tab";
+            break;
+        case VK_SHIFT:
+        case VK_LSHIFT:
+        case VK_RSHIFT:
+            output << "Shift";
+            break;
+        case VK_CONTROL:
+        case VK_LCONTROL:
+        case VK_RCONTROL:
+            output << "Control";
+            break;
+        case VK_ESCAPE:
+            output << "Escape";
+            break;
+        case VK_END:
+            output << "End";
+            break;
+        case VK_HOME:
+            output << "Home";
+            break;
+        case VK_LEFT:
+            output << "ArrowLeft";
+            break;
+        case VK_UP:
+            output << "ArrowUp";
+            break;
+        case VK_RIGHT:
+            output << "ArrowRight";
+            break;
+        case VK_DOWN:
+            output << "ArrowDown";
+            break;
+        case VK_CAPITAL:
+            output << "CapsLock";
+            break;
+        case VK_PRIOR:
+            output << "PageUp";
+            break;
+        case VK_NEXT:
+            output << "PageDown";
+            break;
+        case VK_DELETE:
+            output << "Delete";
+            break;
+        case VK_INSERT:
+            output << "Insert";
+            break;
+        case VK_SNAPSHOT:
+            output << "PrintScreen";
+            break;
+        case 190:
+        case 110:
+            output << ".";
+            break;
+        case 189:
+        case 109:
+            output << "-";
+            break;
+        default:
+            if (key_stroke >= VK_F1 && key_stroke <= VK_F20) {
+                output << "F" << (key_stroke - VK_F1 + 1);
+            } else {
+                // map virtual key according to keyboard layout
+                char key = MapVirtualKeyExA(key_stroke, MAPVK_VK_TO_CHAR, layout);
+                output << char(key);
+            }
     }
 
     return output.str();

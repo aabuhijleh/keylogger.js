@@ -1,9 +1,11 @@
 const addon = require("bindings")("push_to_talk");
 
-addon.start((keyCode, isKeyUp) => {
-  console.log(`key is pressed: [${keyCode}] ${isKeyUp}`);
+addon.start((key, isKeyUp) => {
+  console.log({ key, direction: isKeyUp ? "up" : "down" });
 });
 
 // setTimeout(() => {
 //   addon.stop();
-// }, 5000);
+// }, 1000);
+
+// module.exports = addon;

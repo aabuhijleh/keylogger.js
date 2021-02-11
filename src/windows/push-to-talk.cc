@@ -1,11 +1,9 @@
 #include <Windows.h>
 #include <napi.h>
-#include <time.h>
-#include <cstdio>
-#include <fstream>
 #include <iostream>
 #include <sstream>
 #include <string>
+#include <thread>
 
 Napi::ThreadSafeFunction tsfn;
 std::thread nativeThread;

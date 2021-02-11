@@ -98,12 +98,6 @@ void Stop(const Napi::CallbackInfo& info) {
     ReleaseTSFN();
 }
 
-Napi::Object Init(Napi::Env env, Napi::Object exports) {
-    exports.Set(Napi::String::New(env, "start"), Napi::Function::New(env, Start));
-    exports.Set(Napi::String::New(env, "stop"), Napi::Function::New(env, Stop));
-    return exports;
-}
-
 void ReleaseTSFN() {
     if (tsfn) {
         // Release the TSFN
@@ -224,6 +218,12 @@ std::string ConvertKeyCodeToString(int key_stroke) {
     }
 
     return output.str();
+}
+
+Napi::Object Init(Napi::Env env, Napi::Object exports) {
+    exports.Set(Napi::String::New(env, "start"), Napi::Function::New(env, Start));
+    exports.Set(Napi::String::New(env, "stop"), Napi::Function::New(env, Stop));
+    return exports;
 }
 
 NODE_API_MODULE(push_to_talk, Init)

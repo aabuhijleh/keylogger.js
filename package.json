@@ -6,6 +6,7 @@
   "gypfile": true,
   "files": [
     "index.js",
+    "index.d.ts",
     "build/Release/*.node"
   ],
   "scripts": {

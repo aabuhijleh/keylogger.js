@@ -3,6 +3,7 @@
 #include <napi.h>
 
 #include <iostream>
+#include <map>
 #include <string>
 #include <thread>
 
@@ -10,8 +11,10 @@ Napi::ThreadSafeFunction tsfn;
 std::thread nativeThread;
 
 BOOL shouldNativeThreadKeepRunning;
+std::map<int, bool> modifiers;  // to check modifiers state (up or down)
 
 void ReleaseTSFN();
+std::string ConvertKeyCodeToString(int key_stroke);
 
 // Trigger the JS callback when a key is pressed
 void Start(const Napi::CallbackInfo& info) {
@@ -37,22 +40,46 @@ void Start(const Napi::CallbackInfo& info) {
       });
 
     nativeThread = std::thread([] {
+        modifiers.clear();
+
         auto CGEventCallback = [](CGEventTapProxy proxy, CGEventType type, CGEventRef event,
                                   void* refcon) {
-            if (type != kCGEventKeyDown && type != kCGEventFlagsChanged && type != kCGEventKeyUp) {
+            if (type != kCGEventKeyDown && type != kCGEventKeyUp && type != kCGEventFlagsChanged) {
                 return event;
             }
 
             CGKeyCode keyCode =
               (CGKeyCode)CGEventGetIntegerValueField(event, kCGKeyboardEventKeycode);
 
-            std::cout << "\nKEYDOWN - " << keyCode << std::endl;
+            // get key direction
+            bool isKeyUp = false;
+            if (type == kCGEventKeyUp) {
+                isKeyUp = true;
+            } else if (type == kCGEventFlagsChanged) {
+                std::map<int, bool>::iterator iter = modifiers.find(keyCode);
+                if (iter == modifiers.end()) {
+                    // not found
+                    modifiers[keyCode] = true;
+                } else {
+                    // found
+                    modifiers.erase(keyCode);
+                    isKeyUp = true;
+                }
+            }
+
+            napi_status status = tsfn.BlockingCall([=](Napi::Env env, Napi::Function jsCallback) {
+                jsCallback.Call({Napi::String::New(env, ConvertKeyCodeToString(keyCode)),
+                                 Napi::Boolean::New(env, isKeyUp)});
+            });
+            if (status != napi_ok) {
+                std::cout << "Failed to execute BlockingCall!" << std::endl;
+            }
 
             return event;
         };
 
-        CGEventMask eventMask =
-          (CGEventMaskBit(kCGEventKeyDown) | CGEventMaskBit(kCGEventFlagsChanged));
+        CGEventMask eventMask = (CGEventMaskBit(kCGEventKeyDown) | CGEventMaskBit(kCGEventKeyUp) |
+                                 CGEventMaskBit(kCGEventFlagsChanged));
         CFMachPortRef eventTap =
           CGEventTapCreate(kCGSessionEventTap, kCGHeadInsertEventTap, kCGEventTapOptionDefault,
                            eventMask, CGEventCallback, NULL);
@@ -88,6 +115,18 @@ void ReleaseTSFN() {
         }
 
         tsfn = NULL;
+    }
+}
+
+// Try to match web values
+// https://developer.mozilla.org/en-US/docs/Web/API/KeyboardEvent/key/Key_Values
+std::string ConvertKeyCodeToString(int key_stroke) {
+    switch ((int)key_stroke) {
+        case kVK_Option:
+        case kVK_RightOption:
+            return "Alt";
+        default:
+            return "unknown";
     }
 }
 

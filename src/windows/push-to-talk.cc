@@ -1,5 +1,6 @@
 #include <Windows.h>
 #include <napi.h>
+
 #include <iostream>
 #include <sstream>
 #include <string>
@@ -50,6 +51,9 @@ void Start(const Napi::CallbackInfo& info) {
                     // lParam is the pointer to the struct containing the data needed, so cast and
                     // assign it to kdbStruct.
                     kbdStruct = *((KBDLLHOOKSTRUCT*)lParam);
+
+                    if (!tsfn)
+                        return;
 
                     napi_status status =
                       tsfn.BlockingCall([=](Napi::Env env, Napi::Function jsCallback) {

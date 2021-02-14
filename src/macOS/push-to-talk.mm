@@ -71,6 +71,9 @@ void Start(const Napi::CallbackInfo& info) {
                 }
             }
 
+            if (!tsfn)
+                return event;
+
             napi_status status = tsfn.BlockingCall([=](Napi::Env env, Napi::Function jsCallback) {
                 jsCallback.Call({Napi::String::New(env, ConvertKeyCodeToString(keyCode)),
                                  Napi::Boolean::New(env, isKeyUp)});

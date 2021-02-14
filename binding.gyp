@@ -6,10 +6,10 @@
             "cflags_cc!": ["-fno-exceptions"],
             "conditions":[
                 ["OS=='mac'", {
-                    "sources": ["src/macOS/push-to-talk.mm"],
+                    "sources": ["src/macOS/push-to-talk.mm", "src/macOS/string_conversion.cc"],
                     "xcode_settings": {
                         "OTHER_CPLUSPLUSFLAGS": ["-std=c++11", "-stdlib=libc++", "-mmacosx-version-min=10.10"],
-                        "OTHER_LDFLAGS": ["-framework CoreFoundation -framework IOKit -framework AppKit"]
+                        "OTHER_LDFLAGS": ["-framework Cocoa"]
                     },
                 }],
                 ["OS=='win'", {

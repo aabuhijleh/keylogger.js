@@ -1,4 +1,5 @@
-#include <ApplicationServices/ApplicationServices.h>
+#import <Cocoa/Cocoa.h>
+
 #include <Carbon/Carbon.h>
 #include <napi.h>
 
@@ -6,6 +7,9 @@
 #include <map>
 #include <string>
 #include <thread>
+
+#include "./keyboard_codes.h"
+#include "./string_conversion.h"
 
 Napi::ThreadSafeFunction tsfn;
 std::thread nativeThread;
@@ -118,6 +122,53 @@ void ReleaseTSFN() {
     }
 }
 
+std::string ConvertKeyCodeToText(int mac_key_code) {
+    TISInputSourceRef source = TISCopyCurrentKeyboardInputSource();
+    CFDataRef layout_data =
+      static_cast<CFDataRef>((TISGetInputSourceProperty(source, kTISPropertyUnicodeKeyLayoutData)));
+    if (!layout_data) {
+        // TISGetInputSourceProperty returns null with  Japanese keyboard layout.
+        // Using TISCopyCurrentKeyboardLayoutInputSource to fix NULL return.
+        source = TISCopyCurrentKeyboardLayoutInputSource();
+        layout_data = static_cast<CFDataRef>(
+          (TISGetInputSourceProperty(source, kTISPropertyUnicodeKeyLayoutData)));
+        if (!layout_data) {
+            // https://developer.apple.com/library/mac/documentation/TextFonts/Reference/TextInputSourcesReference/#//apple_ref/c/func/TISGetInputSourceProperty
+            return std::string();
+        }
+    }
+
+    const UCKeyboardLayout* keyboardLayout =
+      reinterpret_cast<const UCKeyboardLayout*>(CFDataGetBytePtr(layout_data));
+
+    int mac_modifiers = 0;
+
+    // Convert EventRecord modifiers to format UCKeyTranslate accepts. See docs
+    // on UCKeyTranslate for more info.
+    UInt32 modifier_key_state = (mac_modifiers >> 8) & 0xFF;
+
+    UInt32 dead_key_state = 0;
+    UniCharCount char_count = 0;
+    UniChar character = 0;
+    OSStatus status = UCKeyTranslate(
+      keyboardLayout, static_cast<UInt16>(mac_key_code), kUCKeyActionDown, modifier_key_state,
+      LMGetKbdLast(), kUCKeyTranslateNoDeadKeysBit, &dead_key_state, 1, &char_count, &character);
+
+    bool isDeadKey = false;
+    if (status == noErr && char_count == 0 && dead_key_state != 0) {
+        isDeadKey = true;
+        status = UCKeyTranslate(keyboardLayout, static_cast<UInt16>(mac_key_code), kUCKeyActionDown,
+                                modifier_key_state, LMGetKbdLast(), kUCKeyTranslateNoDeadKeysBit,
+                                &dead_key_state, 1, &char_count, &character);
+    }
+
+    if (status == noErr && char_count == 1 && !std::iscntrl(character)) {
+        wchar_t value = character;
+        return vscode_keyboard::UTF16toUTF8(&value, 1);
+    }
+    return std::string();
+}
+
 // Try to match web values
 // https://developer.mozilla.org/en-US/docs/Web/API/KeyboardEvent/key/Key_Values
 std::string ConvertKeyCodeToString(int key_stroke) {
@@ -226,7 +277,7 @@ std::string ConvertKeyCodeToString(int key_stroke) {
             if (key_stroke >= 0x52 && key_stroke <= 0x5C) {
                 return std::to_string(key_stroke - 0x52);
             } else {
-                return "";  // TODO: the rest of keys
+                return ConvertKeyCodeToText(key_stroke);
             }
     }
 }

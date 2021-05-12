@@ -2,6 +2,10 @@
 
 A simple Node.js keylogger for Windows and macOS
 
+## Prerequisites
+
+Make sure you have [`node-gyp`](https://github.com/nodejs/node-gyp#installation) and its dependencies installed
+
 ## Install
 
 ```

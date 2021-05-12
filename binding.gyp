@@ -1,19 +1,19 @@
 {
     "targets": [
         {
-            "target_name": "push_to_talk",
+            "target_name": "keylogger",
             "cflags!": ["-fno-exceptions"],
             "cflags_cc!": ["-fno-exceptions"],
             "conditions":[
                 ["OS=='mac'", {
-                    "sources": ["src/macOS/push-to-talk.mm", "src/macOS/string_conversion.cc"],
+                    "sources": ["src/macOS/keylogger.mm", "src/macOS/string_conversion.cc"],
                     "xcode_settings": {
                         "OTHER_CPLUSPLUSFLAGS": ["-std=c++11", "-stdlib=libc++", "-mmacosx-version-min=10.10"],
                         "OTHER_LDFLAGS": ["-framework Cocoa"]
                     },
                 }],
                 ["OS=='win'", {
-                    "sources": ["src/windows/push-to-talk.cc"]
+                    "sources": ["src/windows/keylogger.cc"]
                 }]
             ],
             "include_dirs": [

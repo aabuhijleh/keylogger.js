@@ -12,22 +12,33 @@
 #include "./string_conversion.h"
 
 Napi::ThreadSafeFunction tsfn;
-std::thread nativeThread;
 
-BOOL shouldNativeThreadKeepRunning;
+// Data structure representing our thread-safe function context.
+struct TsfnContext {
+    TsfnContext(Napi::Env env){};
+    BOOL shouldNativeThreadKeepRunning = YES;
+    std::thread nativeThread;
+};
+
 std::map<int, bool> modifiers;  // to check modifiers state (up or down)
 
 void ReleaseTSFN();
 std::string ConvertKeyCodeToString(int key_stroke);
 
+// The thread-safe function finalizer callback. This callback executes
+// at destruction of thread-safe function, taking as arguments the finalizer
+// data and threadsafe-function context.
+void FinalizerCallback(Napi::Env env, void *finalizeData, TsfnContext *context);
+
 // Trigger the JS callback when a key is pressed
-void Start(const Napi::CallbackInfo& info) {
+void Start(const Napi::CallbackInfo &info) {
     Napi::Env env = info.Env();
 
     // Stop if already running
     ReleaseTSFN();
 
-    shouldNativeThreadKeepRunning = YES;
+    // Construct context data
+    auto contextData = new TsfnContext(env);
 
     // Create a ThreadSafeFunction
     tsfn = Napi::ThreadSafeFunction::New(
@@ -36,18 +47,16 @@ void Start(const Napi::CallbackInfo& info) {
       "Keyboard Events",             // Name
       0,                             // Unlimited queue
       1,                             // Only one thread will use this initially
-      [](Napi::Env) {                // Finalizer used to clean threads up
-          std::cout << "trying to clean up native thread" << std::endl;
-          shouldNativeThreadKeepRunning = NO;
-          nativeThread.join();
-          std::cout << "native thread joined" << std::endl;
-      });
+      contextData,                   // Context that can be accessed by Finalizer
+      FinalizerCallback,             // Finalizer used to clean threads up
+      (void *)nullptr                // Finalizer data
+    );
 
-    nativeThread = std::thread([] {
+    contextData->nativeThread = std::thread([contextData] {
         modifiers.clear();
 
         auto CGEventCallback = [](CGEventTapProxy proxy, CGEventType type, CGEventRef event,
-                                  void* refcon) {
+                                  void *refcon) {
             if (type != kCGEventKeyDown && type != kCGEventKeyUp && type != kCGEventFlagsChanged) {
                 return event;
             }
@@ -79,7 +88,7 @@ void Start(const Napi::CallbackInfo& info) {
                                  Napi::Boolean::New(env, isKeyUp)});
             });
             if (status != napi_ok) {
-                std::cout << "Failed to execute BlockingCall!" << std::endl;
+                std::cerr << "Failed to execute BlockingCall!" << std::endl;
             }
 
             return event;
@@ -92,7 +101,7 @@ void Start(const Napi::CallbackInfo& info) {
                            eventMask, CGEventCallback, NULL);
 
         if (!eventTap) {
-            std::cout << "Failed to create event tap" << std::endl;
+            std::cerr << "Failed to create event tap" << std::endl;
             return;
         }
 
@@ -101,15 +110,15 @@ void Start(const Napi::CallbackInfo& info) {
         CFRunLoopAddSource(CFRunLoopGetCurrent(), runLoopSource, kCFRunLoopCommonModes);
         CGEventTapEnable(eventTap, true);
 
-        NSRunLoop* theRL = [NSRunLoop currentRunLoop];
-        while (shouldNativeThreadKeepRunning &&
+        NSRunLoop *theRL = [NSRunLoop currentRunLoop];
+        while (contextData->shouldNativeThreadKeepRunning &&
                [theRL runMode:NSDefaultRunLoopMode
-                   beforeDate:[NSDate dateWithTimeInterval:1.0 sinceDate:[NSDate date]]])
+                   beforeDate:[NSDate dateWithTimeInterval:0.2 sinceDate:[NSDate date]]])
             ;
     });
 }
 
-void Stop(const Napi::CallbackInfo& info) {
+void Stop(const Napi::CallbackInfo &info) {
     ReleaseTSFN();
 }
 
@@ -118,9 +127,8 @@ void ReleaseTSFN() {
         // Release the TSFN
         napi_status status = tsfn.Release();
         if (status != napi_ok) {
-            std::cout << "Failed to release the TSFN!" << std::endl;
+            std::cerr << "Failed to release the TSFN!" << std::endl;
         }
-
         tsfn = NULL;
     }
 }
@@ -141,8 +149,8 @@ std::string ConvertKeyCodeToText(int mac_key_code) {
         }
     }
 
-    const UCKeyboardLayout* keyboardLayout =
-      reinterpret_cast<const UCKeyboardLayout*>(CFDataGetBytePtr(layout_data));
+    const UCKeyboardLayout *keyboardLayout =
+      reinterpret_cast<const UCKeyboardLayout *>(CFDataGetBytePtr(layout_data));
 
     int mac_modifiers = 0;
 
@@ -285,10 +293,21 @@ std::string ConvertKeyCodeToString(int key_stroke) {
     }
 }
 
+void FinalizerCallback(Napi::Env env, void *finalizeData, TsfnContext *context) {
+    context->shouldNativeThreadKeepRunning = NO;
+    if (context->nativeThread.joinable()) {
+        context->nativeThread.join();
+    } else {
+        std::cerr << "Failed to join nativeThread!" << std::endl;
+    }
+
+    delete context;
+}
+
 Napi::Object Init(Napi::Env env, Napi::Object exports) {
     exports.Set(Napi::String::New(env, "start"), Napi::Function::New(env, Start));
     exports.Set(Napi::String::New(env, "stop"), Napi::Function::New(env, Stop));
     return exports;
 }
 
-NODE_API_MODULE(push_to_talk, Init)
+NODE_API_MODULE(keylogger, Init)

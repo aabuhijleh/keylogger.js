@@ -5,8 +5,8 @@ capture key down and up events
 ```
 import * as keylogger from "keylogger.js";
 
-keylogger.start((key, isKeyUp) => {
-  console.log("keyboard event", key, isKeyUp);
+keylogger.start((key, isKeyUp, keyCode) => {
+  console.log("keyboard event", key, isKeyUp, keyCode);
 });
 ```
 */

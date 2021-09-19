@@ -85,7 +85,8 @@ void Start(const Napi::CallbackInfo &info) {
 
             napi_status status = tsfn.BlockingCall([=](Napi::Env env, Napi::Function jsCallback) {
                 jsCallback.Call({Napi::String::New(env, ConvertKeyCodeToString(keyCode)),
-                                 Napi::Boolean::New(env, isKeyUp)});
+                                 Napi::Boolean::New(env, isKeyUp),
+                                 Napi::Number::New(env, keyCode)});
             });
             if (status != napi_ok) {
                 std::cerr << "Failed to execute BlockingCall!" << std::endl;

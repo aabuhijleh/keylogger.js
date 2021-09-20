@@ -19,8 +19,8 @@ import * as keylogger from "keylogger.js";
 // or
 // const keylogger = require("keylogger.js");
 
-keylogger.start((key, isKeyUp) => {
-  console.log("keyboard event", key, isKeyUp);
+keylogger.start((key, isKeyUp, keyCode) => {
+  console.log("keyboard event", key, isKeyUp, keyCode);
 });
 ```
 

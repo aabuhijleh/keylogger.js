@@ -15,7 +15,7 @@ $ npm install keylogger.js
 ## Usage
 
 ```ts
-import keylogger from "keylogger.js";
+import * as keylogger from "keylogger.js";
 // or
 // const keylogger = require("keylogger.js");
 

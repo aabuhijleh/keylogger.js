@@ -3,7 +3,7 @@ capture key down and up events
 
 @example
 ```
-import * as keylogger from "keylogger.js";
+import keylogger from "keylogger.js";
 
 keylogger.start((key, isKeyUp, keyCode) => {
   console.log("keyboard event", key, isKeyUp, keyCode);
@@ -20,7 +20,9 @@ keylogger.start((key, isKeyUp, keyCode) => {
  *
  * `keyCode`: numerical code representing the value of the pressed key
  */
-export const start: (callback: (key: string, isKeyUp: boolean, keyCode: number) => void) => void;
+export const start: (
+  callback: (key: string, isKeyUp: boolean, keyCode: number) => void
+) => void;
 
 /**
  * Stop listening to keyboard events

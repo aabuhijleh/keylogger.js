@@ -14,6 +14,9 @@
                 }],
                 ["OS=='win'", {
                     "sources": ["src/windows/keylogger.cc"]
+                }],
+                ["OS=='linux'", {
+                    "sources": ["src/linux/keylogger.cc"]
                 }]
             ],
             "include_dirs": [

@@ -1,6 +1,6 @@
 # Keylogger.js
 
-A simple Node.js keylogger for Windows and macOS
+A simple Node.js keylogger for Windows, macOS and Linux
 
 ## Prerequisites
 

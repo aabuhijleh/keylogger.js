@@ -1,7 +1,7 @@
 {
   "name": "keylogger.js",
   "version": "0.0.4",
-  "description": "A simple Node.js keylogger for Windows and macOS",
+  "description": "A simple Node.js keylogger for Windows, macOS and Linux",
   "main": "src/index.js",
   "types": "src/index.d.ts",
   "gypfile": true,
@@ -14,24 +14,27 @@
   },
   "dependencies": {
     "bindings": "^1.5.0",
-    "node-addon-api": "^3.1.0"
+    "node-addon-api": "^4.3.0"
+  },
+  "license": "MIT",
+  "author": {
+    "name": "Abdurrahman Abu-Hijleh",
+    "email": "aabuhijleh.dev@gmail.com"
   },
   "repository": {
     "type": "git",
     "url": "git+https://github.com/aabuhijleh/keylogger.js.git"
   },
-  "keywords": [
-    "node",
-    "keylogger",
-    "native"
-  ],
-  "author": {
-    "name": "Abdurrahman Abu-Hijleh",
-    "email": "aabuhijleh@asaltech.com"
-  },
-  "license": "MIT",
   "bugs": {
     "url": "https://github.com/aabuhijleh/keylogger.js/issues"
   },
-  "homepage": "https://github.com/aabuhijleh/keylogger.js#readme"
+  "homepage": "https://github.com/aabuhijleh/keylogger.js#readme",
+  "keywords": [
+    "keylogger",
+    "keypress",
+    "keyup",
+    "hook",
+    "keyboard",
+    "electron"
+  ]
 }

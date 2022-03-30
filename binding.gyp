@@ -14,6 +14,9 @@
                 }],
                 ["OS=='win'", {
                     "sources": ["src/windows/keylogger.cc"]
+                }],
+                ["OS=='linux'", {
+                    "sources": ["src/linux/keylogger.cc", "src/linux/find_event_file.cc"]
                 }]
             ],
             "include_dirs": [

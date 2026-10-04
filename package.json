@@ -1,33 +1,59 @@
 {
   "name": "keylogger.js",
-  "version": "0.0.4",
-  "description": "A simple Node.js keylogger for Windows and macOS",
+  "version": "0.0.0-development",
+  "description": "Global keyboard listener for macOS, Windows, and Linux",
   "main": "src/index.js",
   "types": "src/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./src/index.d.ts",
+      "default": "./src/index.js"
+    },
+    "./package.json": "./package.json"
+  },
   "gypfile": true,
   "files": [
     "src/**/*",
-    "binding.gyp"
+    "binding.gyp",
+    "prebuilds/**/*"
   ],
   "scripts": {
-    "install": "node-gyp rebuild"
+    "install": "node-gyp-build",
+    "prepare": "lefthook install",
+    "prebuild": "prebuildify --napi --strip",
+    "test": "node --test \"test/**/*.test.js\""
+  },
+  "engines": {
+    "node": ">=22"
   },
   "dependencies": {
-    "bindings": "^1.5.0",
-    "node-addon-api": "^3.1.0"
+    "node-addon-api": "^8.9.2",
+    "node-gyp-build": "^4.8.4"
+  },
+  "devDependencies": {
+    "@commitlint/cli": "^19.8.1",
+    "@commitlint/config-conventional": "^19.8.1",
+    "@semantic-release/exec": "^7.1.0",
+    "clang-format": "^1.8.0",
+    "lefthook": "^2.1.16",
+    "prebuildify": "^6.0.1",
+    "semantic-release": "^24.2.7"
   },
   "repository": {
     "type": "git",
     "url": "git+https://github.com/aabuhijleh/keylogger.js.git"
   },
   "keywords": [
-    "node",
-    "keylogger",
+    "keyboard",
+    "global",
+    "listener",
+    "push-to-talk",
+    "hotkey",
     "native"
   ],
   "author": {
-    "name": "Abdurrahman Abu-Hijleh",
-    "email": "aabuhijleh@asaltech.com"
+    "name": "Abed Abu-Hijleh",
+    "email": "aabuhijleh.dev@gmail.com"
   },
   "license": "MIT",
   "bugs": {

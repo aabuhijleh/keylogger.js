@@ -1,30 +1,44 @@
 /*
-capture key down and up events
+Report keyboard press and release events while another application is
+focused.
 
 @example
 ```
-import keylogger from "keylogger.js";
+import keylogger = require("keylogger.js");
 
-keylogger.start((key, isKeyUp, keyCode) => {
-  console.log("keyboard event", key, isKeyUp, keyCode);
+const unlisten = keylogger.listen((event) => {
+  console.log(event.key, event.code, event.state, event.repeat);
 });
+
+// later
+unlisten();
 ```
 */
 
-/**
- * Start listening to keyboard events
- *
- * `key`: string matching KeyboardEvent.key value as listed in this table https://developer.mozilla.org/en-US/docs/Web/API/KeyboardEvent/key/Key_Values
- *
- * `isKeyUp`: boolean that will be `true` if the key is released and `false` if it's pressed down
- *
- * `keyCode`: numerical code representing the value of the pressed key
- */
-export const start: (
-  callback: (key: string, isKeyUp: boolean, keyCode: number) => void
-) => void;
+interface KeyEvent {
+  /** UI Events KeyboardEvent.key. Space is " ", U+0020. */
+  key: string;
+  /** UI Events KeyboardEvent.code, the same string on every OS. */
+  code: string;
+  /** "down" on press, "up" on release. Autorepeat is "down" with repeat: true. */
+  state: "down" | "up";
+  repeat: boolean;
+}
 
-/**
- * Stop listening to keyboard events
- */
-export const stop: () => void;
+interface Keylogger {
+  /**
+   * Subscribe to keyboard events. The first subscriber installs the OS
+   * listener; removing the last subscription tears it down.
+   *
+   * Throws a TypeError if `handler` is not a function, and an Error if the
+   * OS listener could not be installed (assistive access on macOS, a failed
+   * hook on Windows, group `input` on Linux — the message names the
+   * permission).
+   *
+   * @returns A function that removes this subscription. Idempotent.
+   */
+  listen(handler: (event: KeyEvent) => void): () => void;
+}
+
+declare const keylogger: Keylogger;
+export = keylogger;

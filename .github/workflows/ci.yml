@@ -1,0 +1,129 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions: {}
+
+jobs:
+  build:
+    name: ${{ matrix.os }} / Node ${{ matrix.node }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest, windows-latest]
+        node: [22, 24]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-node@v7
+        with:
+          node-version: ${{ matrix.node }}
+      - name: Install libevdev headers
+        if: runner.os == 'Linux'
+        run: sudo apt-get update && sudo apt-get install --yes libevdev-dev
+      # windows-latest ships Visual Studio 2026. Node 22's npm 10 bundles
+      # node-gyp 11, which reports that install as an unknown version. npm 11.19
+      # bundles node-gyp 12.4, which the Node 24 job on this image already uses.
+      - name: Upgrade npm for Visual Studio 2026
+        if: runner.os == 'Windows' && matrix.node == 22
+        shell: bash
+        run: npm install --global npm@11.19.0
+      - name: Install (compiles the addon)
+        run: npm ci
+      - name: Key table and API tests
+        run: npm test
+      - name: Smoke-load the addon and the wrapper
+        shell: bash
+        run: |
+          node -e "const a = require('node-gyp-build')(process.cwd()); \
+            if (typeof a.start !== 'function' || typeof a.stop !== 'function') process.exit(1); \
+            console.log('addon loads, exports start/stop');"
+          node -e "const k = require('./src/index.js'); \
+            if (typeof k.listen !== 'function') process.exit(1); \
+            console.log('wrapper exports listen');"
+      - name: Check native formatting
+        if: runner.os == 'Linux'
+        shell: bash
+        run: npx clang-format --dry-run --Werror $(git ls-files 'src/**/*.cc' 'src/**/*.mm' 'src/**/*.h')
+
+  package:
+    name: prebuild + tarball install (${{ matrix.os }})
+    needs: build
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest, windows-latest]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-node@v7
+        with:
+          node-version: 24
+      - name: Install libevdev headers
+        if: runner.os == 'Linux'
+        run: sudo apt-get update && sudo apt-get install --yes libevdev-dev
+      - run: npm ci --ignore-scripts
+      - name: Build prebuilds
+        run: npx prebuildify --napi --strip
+      - uses: actions/upload-artifact@v7
+        with:
+          name: prebuilds-${{ matrix.os }}
+          path: prebuilds/
+          if-no-files-found: error
+      - name: Install from packed tarball without compiling
+        shell: bash
+        run: |
+          npm pack
+          TARBALL="$PWD/$(ls keylogger.js-*.tgz)"
+          rm -rf .pkgtest && mkdir .pkgtest
+          npm install --prefix "$PWD/.pkgtest" "$TARBALL" 2>&1 | tee install.log
+          if grep -q "gyp info" install.log; then
+            echo "install compiled from source; prebuild was not used" >&2
+            exit 1
+          fi
+          cd .pkgtest
+          node -e "const path = require('path'); \
+            const dir = path.dirname(require.resolve('keylogger.js/package.json')); \
+            const a = require('node-gyp-build')(dir); \
+            if (typeof a.start !== 'function' || typeof a.stop !== 'function') process.exit(1); \
+            console.log('prebuild loads:', typeof a.start, typeof a.stop);"
+          node -e "const k = require('keylogger.js'); \
+            if (typeof k.listen !== 'function') process.exit(1); \
+            console.log('installed wrapper exports listen');"
+
+  release:
+    name: semantic-release + npm stage publish
+    needs: [build, package]
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    # issues and pull-requests: @semantic-release/github comments on released PRs and issues.
+    permissions:
+      contents: write
+      id-token: write
+      issues: write
+      pull-requests: write
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-node@v7
+        with:
+          node-version: 24
+          registry-url: https://registry.npmjs.org
+          package-manager-cache: false
+      - name: Ensure npm >= 11.15.0 (staged publishing)
+        run: npm install --global npm@^11.15.0
+      - run: npm ci --ignore-scripts
+      - name: Download prebuilds
+        uses: actions/download-artifact@v8
+        with:
+          pattern: prebuilds-*
+          path: prebuilds
+          merge-multiple: true
+      - name: Release (version, tag, notes, staged npm package)
+        run: npx semantic-release
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

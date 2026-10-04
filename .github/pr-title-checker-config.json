@@ -1,0 +1,15 @@
+{
+  "LABEL": {
+    "name": "",
+    "color": "eeeeee"
+  },
+  "CHECKS": {
+    "regexp": "^(?=.{1,100}$)(?:build|chore|ci|docs|feat|fix|perf|refactor|revert|style|test)(?:\\([a-z0-9][a-z0-9._/-]*\\))?!?: \\S(?:.*[^.])?$",
+    "regexpFlags": ""
+  },
+  "MESSAGES": {
+    "success": "PR title is a Conventional Commit.",
+    "failure": "PR title must be a Conventional Commit of at most 100 characters, for example \"feat: add listen()\". Squash merge uses this title as the commit on main.",
+    "notice": ""
+  }
+}

@@ -1,0 +1,5 @@
+# commitlint reads the message file, which Git only passes to commit-msg.
+commit-msg:
+  commands:
+    commitlint:
+      run: ./node_modules/.bin/commitlint --edit {1}

@@ -1,7 +1,7 @@
 {
   "name": "keylogger.js",
   "version": "0.0.0-development",
-  "description": "Global keyboard listener for push-to-talk and hotkeys on macOS, Windows, and Linux",
+  "description": "Global keyboard listener for macOS, Windows, and Linux",
   "main": "src/index.js",
   "types": "src/index.d.ts",
   "exports": {
@@ -19,6 +19,7 @@
   ],
   "scripts": {
     "install": "node-gyp-build",
+    "prepare": "lefthook install",
     "prebuild": "prebuildify --napi --strip",
     "test": "node --test \"test/**/*.test.js\""
   },
@@ -34,6 +35,7 @@
     "@commitlint/config-conventional": "^19.8.1",
     "@semantic-release/exec": "^7.1.0",
     "clang-format": "^1.8.0",
+    "lefthook": "^2.1.16",
     "prebuildify": "^6.0.1",
     "semantic-release": "^24.2.7"
   },

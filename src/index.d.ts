@@ -6,9 +6,12 @@ focused.
 ```
 import keylogger = require("keylogger.js");
 
-keylogger.start((event) => {
+const unlisten = keylogger.listen((event) => {
   console.log(event.key, event.code, event.state, event.repeat);
 });
+
+// later
+unlisten();
 ```
 */
 
@@ -24,14 +27,17 @@ interface KeyEvent {
 
 interface Keylogger {
   /**
-   * Start listening for keyboard events. Throws a TypeError if `callback` is
-   * not a function, and an Error if already listening or if the OS listener
-   * could not be installed (assistive access on macOS, a failed hook on
-   * Windows, group `input` on Linux — the message names the permission).
+   * Subscribe to keyboard events. The first subscriber installs the OS
+   * listener; removing the last subscription tears it down.
+   *
+   * Throws a TypeError if `handler` is not a function, and an Error if the
+   * OS listener could not be installed (assistive access on macOS, a failed
+   * hook on Windows, group `input` on Linux — the message names the
+   * permission).
+   *
+   * @returns A function that removes this subscription. Idempotent.
    */
-  start(callback: (event: KeyEvent) => void): void;
-  /** Stop listening and release the OS hook. Safe to call when not listening. */
-  stop(): void;
+  listen(handler: (event: KeyEvent) => void): () => void;
 }
 
 declare const keylogger: Keylogger;

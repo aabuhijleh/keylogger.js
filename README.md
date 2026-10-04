@@ -27,14 +27,14 @@ CommonJS:
 ```js
 const keylogger = require("keylogger.js");
 
-keylogger.start((event) => {
+const unlisten = keylogger.listen((event) => {
   if (event.code === "Space" && event.state === "down" && !event.repeat) {
-    console.log("push-to-talk key pressed");
+    console.log("space pressed");
   }
 });
 
 // later
-keylogger.stop();
+unlisten();
 ```
 
 TypeScript (with `esModuleInterop`):
@@ -48,6 +48,10 @@ or without it:
 ```ts
 import keylogger = require("keylogger.js");
 ```
+
+`listen` returns a function that removes that subscription. Any number of
+independent subscribers can be active at once: the first one installs the OS
+listener and removing the last one tears it down.
 
 ## Events
 
@@ -86,25 +90,26 @@ distributions.
 
 ## Failure
 
-`start` throws a JavaScript error instead of failing silently:
+`listen` throws a JavaScript error instead of failing silently:
 
-- `TypeError` if the callback is missing or not a function.
-- `Error` if called while already listening — call `stop()` first.
+- `TypeError` if the handler is missing or not a function.
 - `Error` if the OS listener could not be installed. The message names the
   permission: assistive access on macOS, the failed hook on Windows, or group
   `input` on Linux.
 
-`stop()` is always safe: it is a no-op when not listening, and it removes the
-hook / event tap / device reads and frees the native resources.
+The returned `unlisten()` is always safe: it is idempotent, and when the last
+subscription is removed it removes the hook / event tap / device reads and
+frees the native resources.
 
 ## Limits
 
-- One listener per process.
 - Keyboard only — no mouse or other devices.
 - Listen-only: keys are never swallowed, rewritten, or injected. macOS uses a
   listen-only event tap (falling back to a default tap only if creation
   fails), Windows always calls `CallNextHookEx`, Linux only reads.
-- No promise API; events go to the callback you pass to `start`.
+- No promise API; events go to the handler you pass to `listen`. Exceptions
+  thrown by a handler are swallowed so they cannot starve other subscribers —
+  catch them inside your handler if you need them.
 - Linux `key` values are the unshifted US layout (no layout translation).
 - On Windows, `key` for printable keys is layout-translated but does not apply
   Shift state (Shift+1 reports `key: "1"`); `code` is unaffected.

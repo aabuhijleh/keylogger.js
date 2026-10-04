@@ -3,10 +3,8 @@
 // run this file.
 const keylogger = require("./src/index");
 
-keylogger.start((event) => {
+const unlisten = keylogger.listen((event) => {
   console.log("key event", event);
 });
 
-setTimeout(() => {
-  keylogger.stop();
-}, 10000);
+setTimeout(unlisten, 10000);

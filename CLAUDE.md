@@ -6,18 +6,18 @@ Native addon that reports keyboard press and release so an app can act on them, 
 
 CommonJS: `const keylogger = require("keylogger.js")`.
 
-- `keylogger.start(callback)` — `callback` receives one `KeyEvent` object: `{ key, code, state, repeat }`.
+- `keylogger.listen(handler)` — `handler` receives one `KeyEvent` object: `{ key, code, state, repeat }`.
   - `key`: UI Events `KeyboardEvent.key` (Space is `" "`). Layout-translated on macOS/Windows; unshifted US value on Linux.
   - `code`: UI Events `KeyboardEvent.code`, the same string on every OS. Use it for shortcuts.
   - `state`: `"down"` | `"up"`; autorepeat is `"down"` with `repeat: true`.
-- `keylogger.stop()` — removes the OS listener and frees native resources. Safe when not listening.
-- `start` throws a `TypeError` for a non-function callback, an `Error` if already listening (one listener per process), and an `Error` naming the permission if the OS listener cannot be installed (macOS assistive access, Windows hook failure, Linux group `input`).
+- `listen` returns an idempotent `unlisten()`. Multiple subscribers are supported: the wrapper fans events out, the first subscriber installs the OS listener, and the last unsubscribe tears it down and frees native resources.
+- `listen` throws a `TypeError` for a non-function handler and an `Error` naming the permission if the OS listener cannot be installed (macOS assistive access, Windows hook failure, Linux group `input`). Handler exceptions are swallowed so they cannot starve other subscribers.
 
 Types: `src/index.d.ts` uses `export =` (the runtime is CommonJS). `package.json` has an `exports` map with `types` first.
 
 ## Layout of the code
 
-- `src/index.js` — the public wrapper: argument checks, key translation, lazy addon load. The addon is a thin binding.
+- `src/index.js` — the public wrapper: argument checks, key translation, subscriber fan-out, lazy addon load. The addon is a thin binding with a single dispatch; multiplexing lives in the wrapper.
 - `src/keys/index.js` — one shared key table: per physical key, the UI Events `code`/`key` plus the macOS (CGKeyCode), Windows (VK), and Linux (KEY_*) native codes. This table is the single source of truth; do not add per-platform tables.
 - `src/macOS/keylogger.mm`, `src/windows/keylogger.cc`, `src/linux/keylogger.cc` — one backend per OS (CGEventTap / WH_KEYBOARD_LL / libevdev read of `/dev/input/event*`, never `EVIOCGRAB`).
 - The addon calls the JS dispatch with a raw event `{ keyCode, extended, state, repeat, character }`; the wrapper maps it through the key table into a `KeyEvent`.

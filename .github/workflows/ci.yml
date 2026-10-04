@@ -8,27 +8,8 @@ on:
 permissions: {}
 
 jobs:
-  # docs and docs(scope) do not publish. Skip the native rebuild and the npm
-  # stage when the PR title, or every commit in the push, is one of those.
-  # docs! still releases: the "!" is a breaking change.
-  docs-only:
-    name: docs commit
-    runs-on: ubuntu-latest
-    outputs:
-      skip: ${{ steps.check.outputs.skip }}
-    steps:
-      - uses: actions/checkout@v7
-      - id: check
-        env:
-          EVENT_NAME: ${{ github.event_name }}
-          PR_TITLE: ${{ github.event.pull_request.title }}
-          PUSH_COMMITS: ${{ toJson(github.event.commits) }}
-        run: node scripts/docs-only.js
-
   build:
     name: ${{ matrix.os }} / Node ${{ matrix.node }}
-    needs: docs-only
-    if: needs.docs-only.outputs.skip != 'true'
     strategy:
       fail-fast: false
       matrix:
@@ -70,8 +51,7 @@ jobs:
 
   package:
     name: prebuild + tarball install (${{ matrix.os }})
-    needs: [docs-only, build]
-    if: needs.docs-only.outputs.skip != 'true'
+    needs: [build]
     strategy:
       fail-fast: false
       matrix:
@@ -116,8 +96,8 @@ jobs:
 
   release:
     name: semantic-release + npm stage publish
-    needs: [docs-only, build, package]
-    if: needs.docs-only.outputs.skip != 'true' && github.event_name == 'push' && github.ref == 'refs/heads/main'
+    needs: [build, package]
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
     runs-on: ubuntu-latest
     # issues and pull-requests: @semantic-release/github comments on released PRs and issues.
     permissions:
@@ -134,8 +114,6 @@ jobs:
           node-version: 24
           registry-url: https://registry.npmjs.org
           package-manager-cache: false
-      - name: Ensure npm >= 11.15.0 (staged publishing)
-        run: npm install --global npm@^11.15.0
       - run: npm ci --ignore-scripts
       - name: Download prebuilds
         uses: actions/download-artifact@v8
@@ -143,7 +121,19 @@ jobs:
           pattern: prebuilds-*
           path: prebuilds
           merge-multiple: true
+      # @semantic-release/npm depends on npm 10, which ships node_modules/.bin/npm.
+      # npx puts that directory first on PATH, so a bare `npm stage` hits npm 10
+      # ("Unknown command: stage") even when setup-node's npm has the command.
+      # Record the setup-node binary before semantic-release and call it by path.
+      - name: Ensure npm stage is the npm semantic-release will run
+        shell: bash
+        run: |
+          echo "npm bin: $(command -v npm)"
+          npm --version
+          npm stage --help
+          echo "NPM_BIN=$(command -v npm)" >> "$GITHUB_ENV"
       - name: Release (version, tag, notes, staged npm package)
         run: npx semantic-release
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          NPM_BIN: ${{ env.NPM_BIN }}

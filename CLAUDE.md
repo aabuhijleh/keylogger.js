@@ -26,11 +26,11 @@ Types: `src/index.d.ts` uses `export =` (the runtime is CommonJS). `package.json
 ## Tests and builds
 
 - `npm test` — node:test unit tests for the key table and the wrapper contract. Runs on any OS without a desktop session.
-- `test.js` — manual 10-second listener; needs a desktop session and the OS permission. CI must not run it.
+- `test.ts` — manual 10-second listener; needs a desktop session and the OS permission. CI must not run it.
 - `npm run prebuild` — `prebuildify --napi --strip` into `prebuilds/` (gitignored, packed into the npm tarball).
 - Toolchain: node-addon-api 8 (C++17, `NAPI_VERSION=8`), Node `>=22`, loader `node-gyp-build`, macOS deployment target 11.0.
 - Local Linux builds need libevdev headers; CI installs `libevdev-dev` on ubuntu runners.
 
 ## Releases
 
-Versions, tags, and release notes are owned by semantic-release from Conventional Commits on `main` (`.releaserc.json`); `package.json` stays at `0.0.0-development`. Publishing uses npm staged publishing with trusted publishing (OIDC) from `.github/workflows/ci.yml`: CI stages the package (`npm stage publish`), and a maintainer approves the stage with 2FA on npmjs.com. Never hand-bump the version, never tag `v0.0.4`-style versions by hand, and never run `npm publish` directly. Pull requests are squash-merged and the PR title is the commit subject on `main`. CI checks that title (`.github/workflows/pr-title.yml`); `npm install` installs lefthook: `commit-msg` runs commitlint, and `pre-commit` checks clang-format on staged native sources. Releasable commits are `feat`, `fix`, and `perf`. A `!` after the type is a major release. `docs` and `docs(scope)` commits skip the build, prebuild, and release jobs.
+Versions, tags, and release notes are owned by semantic-release from Conventional Commits on `main` (`.releaserc.json`); `package.json` stays at `0.0.0-development`. Publishing uses npm staged publishing with trusted publishing (OIDC) from `.github/workflows/ci.yml`: CI stages the package (`npm stage publish`), and a maintainer approves the stage with 2FA on npmjs.com. Never hand-bump the version, never tag `v0.0.4`-style versions by hand, and never run `npm publish` directly. Pull requests are squash-merged and the PR title is the commit subject on `main`. CI checks that title (`.github/workflows/pr-title.yml`); `npm install` installs lefthook: `commit-msg` runs commitlint, and `pre-commit` checks clang-format on staged native sources. Releasable commits are `feat`, `fix`, and `perf`. A `!` after the type is a major release.

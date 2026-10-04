@@ -4,7 +4,7 @@ focused.
 
 @example
 ```
-import keylogger = require("keylogger.js");
+import keylogger from "keylogger.js";
 
 const unlisten = keylogger.listen((event) => {
   console.log(event.key, event.code, event.state, event.repeat);

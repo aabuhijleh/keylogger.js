@@ -20,7 +20,7 @@
       }
     ],
     ["@semantic-release/npm", { "npmPublish": false }],
-    ["@semantic-release/exec", { "publishCmd": "npm stage publish" }],
+    ["@semantic-release/exec", { "publishCmd": "\"$NPM_BIN\" stage publish" }],
     "@semantic-release/github"
   ]
 }

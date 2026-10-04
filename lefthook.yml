@@ -3,3 +3,11 @@ commit-msg:
   commands:
     commitlint:
       run: ./node_modules/.bin/commitlint --edit {1}
+
+# Same check as CI: clang-format --dry-run --Werror on native sources.
+pre-commit:
+  parallel: true
+  commands:
+    clang-format:
+      glob: "src/**/*.{cc,mm,h}"
+      run: ./node_modules/.bin/clang-format --dry-run --Werror {staged_files}

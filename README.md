@@ -34,12 +34,12 @@ The addon only listens. It does not swallow keys. If a handler throws, other sub
 
 ## Events
 
-| Field    | Meaning                                                                                                                |
-| -------- | ---------------------------------------------------------------------------------------------------------------------- |
-| `key`    | `[KeyboardEvent.key](https://www.w3.org/TR/uievents-key/)`. Space is `" "`.                                            |
-| `code`   | `[KeyboardEvent.code](https://www.w3.org/TR/uievents-code/)`. The same string on every OS. `""` if the key is unknown. |
-| `state`  | `"down"` on press, `"up"` on release.                                                                                  |
-| `repeat` | `true` when holding a key repeats `"down"`.                                                                            |
+| Field    | Meaning                                                                                                       |
+| -------- | ------------------------------------------------------------------------------------------------------------- |
+| `key`    | [KeyboardEvent.key](https://www.w3.org/TR/uievents-key/). Space is `" "`.                                            |
+| `code`   | [KeyboardEvent.code](https://www.w3.org/TR/uievents-code/). The same string on every OS. `""` if the key is unknown. |
+| `state`  | `"down"` on press, `"up"` on release.                                                                         |
+| `repeat` | `true` when holding a key repeats `"down"`.                                                                   |
 
 Use `code` for shortcuts. It stays the same across keyboard layouts. Use `key` for the character. macOS and Windows translate `key` with the active layout. On Windows, Shift does not change `key` for printable keys, so Shift+1 is `"1"`. Linux reports the unshifted US value.
 

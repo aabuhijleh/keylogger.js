@@ -1,15 +1,13 @@
 /*
 Report keyboard press and release events while another application is
-focused, for example for push-to-talk.
+focused.
 
 @example
 ```
 import keylogger = require("keylogger.js");
 
 keylogger.start((event) => {
-  if (event.code === "Space" && event.state === "down" && !event.repeat) {
-    // push-to-talk pressed
-  }
+  console.log(event.key, event.code, event.state, event.repeat);
 });
 ```
 */

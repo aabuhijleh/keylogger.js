@@ -1,30 +1,40 @@
 /*
-capture key down and up events
+Report keyboard press and release events while another application is
+focused, for example for push-to-talk.
 
 @example
 ```
-import keylogger from "keylogger.js";
+import keylogger = require("keylogger.js");
 
-keylogger.start((key, isKeyUp, keyCode) => {
-  console.log("keyboard event", key, isKeyUp, keyCode);
+keylogger.start((event) => {
+  if (event.code === "Space" && event.state === "down" && !event.repeat) {
+    // push-to-talk pressed
+  }
 });
 ```
 */
 
-/**
- * Start listening to keyboard events
- *
- * `key`: string matching KeyboardEvent.key value as listed in this table https://developer.mozilla.org/en-US/docs/Web/API/KeyboardEvent/key/Key_Values
- *
- * `isKeyUp`: boolean that will be `true` if the key is released and `false` if it's pressed down
- *
- * `keyCode`: numerical code representing the value of the pressed key
- */
-export const start: (
-  callback: (key: string, isKeyUp: boolean, keyCode: number) => void
-) => void;
+interface KeyEvent {
+  /** UI Events KeyboardEvent.key. Space is " ", U+0020. */
+  key: string;
+  /** UI Events KeyboardEvent.code, the same string on every OS. */
+  code: string;
+  /** "down" on press, "up" on release. Autorepeat is "down" with repeat: true. */
+  state: "down" | "up";
+  repeat: boolean;
+}
 
-/**
- * Stop listening to keyboard events
- */
-export const stop: () => void;
+interface Keylogger {
+  /**
+   * Start listening for keyboard events. Throws a TypeError if `callback` is
+   * not a function, and an Error if already listening or if the OS listener
+   * could not be installed (assistive access on macOS, a failed hook on
+   * Windows, group `input` on Linux — the message names the permission).
+   */
+  start(callback: (event: KeyEvent) => void): void;
+  /** Stop listening and release the OS hook. Safe to call when not listening. */
+  stop(): void;
+}
+
+declare const keylogger: Keylogger;
+export = keylogger;

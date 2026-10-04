@@ -1,311 +1,391 @@
-#import <Cocoa/Cocoa.h>
-
 #include <Carbon/Carbon.h>
 #include <napi.h>
 
+#include <atomic>
+#include <future>
 #include <iostream>
-#include <map>
+#include <memory>
+#include <mutex>
+#include <set>
 #include <string>
 #include <thread>
 
-#include "./keyboard_codes.h"
-#include "./string_conversion.h"
+namespace {
 
-Napi::ThreadSafeFunction tsfn;
+    // One global TSFN, guarded by tsfnMutex for lifecycle changes on the JS
+    // thread. The event-tap thread reads it lock-free; it is joined inside the
+    // finalizer before the global is reset, so it never observes the reset.
+    Napi::ThreadSafeFunction tsfn;
+    std::mutex tsfnMutex;
 
-// Data structure representing our thread-safe function context.
-struct TsfnContext {
-    TsfnContext(Napi::Env env){};
-    BOOL shouldNativeThreadKeepRunning = YES;
-    std::thread nativeThread;
-};
+    // Events dropped because the TSFN queue (bounded at 1024) was full.
+    std::atomic<uint64_t> droppedEvents{0};
 
-std::map<int, bool> modifiers;  // to check modifiers state (up or down)
+    // Everything the event-tap thread needs, owned by the TSFN finalizer.
+    struct TsfnContext {
+        std::thread nativeThread;
+        // Published by the native thread before it resolves tapCreated, so the
+        // finalizer can always stop the run loop once Start() has returned.
+        CFRunLoopRef runLoop = nullptr;
+        // Owned by the native thread; the tap callback re-enables it through this.
+        CFMachPortRef eventTap = nullptr;
+        // Modifier keyCodes currently held down, tapped-thread only, used to
+        // derive down/up from kCGEventFlagsChanged events.
+        std::set<CGKeyCode> pressedModifiers;
+        // Resolved by the native thread once CGEventTapCreate has succeeded or
+        // definitively failed, so Start() can throw synchronously.
+        std::promise<bool> tapCreated;
+    };
 
-void ReleaseTSFN();
-std::string ConvertKeyCodeToString(int key_stroke);
+    // Event payload copied by value on the tap thread and handed to the JS
+    // thread through the TSFN queue.
+    struct KeyEventData {
+        CGKeyCode keyCode;
+        CGEventFlags flags;
+        bool keyUp;
+        bool repeat;
+    };
 
-// The thread-safe function finalizer callback. This callback executes
-// at destruction of thread-safe function, taking as arguments the finalizer
-// data and threadsafe-function context.
-void FinalizerCallback(Napi::Env env, void *finalizeData, TsfnContext *context);
+    // Cached keyboard layout for UCKeyTranslate. source is retained and keeps the
+    // layout data alive; the CFNotificationCenter observer below releases and
+    // clears the cache when the input source changes so the next event re-copies.
+    struct LayoutCache {
+        std::mutex mutex;
+        TISInputSourceRef source = nullptr;
+        const UCKeyboardLayout *layout = nullptr;
+        UInt32 keyboardType = 0;
+    };
+    LayoutCache layoutCache;
 
-// Trigger the JS callback when a key is pressed
+    void ClearLayoutCacheLocked() {
+        if (layoutCache.source != nullptr) {
+            CFRelease(layoutCache.source);
+            layoutCache.source = nullptr;
+            layoutCache.layout = nullptr;
+            layoutCache.keyboardType = 0;
+        }
+    }
+
+    void ClearLayoutCache() {
+        std::lock_guard<std::mutex> lock(layoutCache.mutex);
+        ClearLayoutCacheLocked();
+    }
+
+    void InputSourceChangedCallback(CFNotificationCenterRef center, void *observer,
+                                    CFStringRef name, const void *object,
+                                    CFDictionaryRef userInfo) {
+        ClearLayoutCache();
+    }
+
+    // Fills the layout cache; caller must hold layoutCache.mutex. The layout
+    // pointer borrowed from the source's kTISPropertyUnicodeKeyLayoutData stays
+    // valid as long as the source is retained.
+    bool EnsureLayoutCacheLocked() {
+        if (layoutCache.source != nullptr) {
+            return true;
+        }
+
+        TISInputSourceRef source = TISCopyCurrentKeyboardInputSource();
+        CFDataRef layoutData = nullptr;
+        if (source != nullptr) {
+            layoutData = static_cast<CFDataRef>(
+              TISGetInputSourceProperty(source, kTISPropertyUnicodeKeyLayoutData));
+        }
+        if (layoutData == nullptr) {
+            // TISGetInputSourceProperty returns null with the Japanese keyboard
+            // layout. Using TISCopyCurrentKeyboardLayoutInputSource to fix NULL
+            // return.
+            if (source != nullptr) {
+                CFRelease(source);
+            }
+            source = TISCopyCurrentKeyboardLayoutInputSource();
+            if (source != nullptr) {
+                layoutData = static_cast<CFDataRef>(
+                  TISGetInputSourceProperty(source, kTISPropertyUnicodeKeyLayoutData));
+            }
+        }
+        if (source == nullptr || layoutData == nullptr) {
+            if (source != nullptr) {
+                CFRelease(source);
+            }
+            return false;
+        }
+
+        layoutCache.source = source;
+        layoutCache.layout =
+          reinterpret_cast<const UCKeyboardLayout *>(CFDataGetBytePtr(layoutData));
+
+        SInt32 keyboardType = 0;
+        CFNumberRef typeNumber =
+          static_cast<CFNumberRef>(TISGetInputSourceProperty(source, kTISPropertyKeyboardType));
+        if (typeNumber != nullptr) {
+            CFNumberGetValue(typeNumber, kCFNumberSInt32Type, &keyboardType);
+        }
+        layoutCache.keyboardType = static_cast<UInt32>(keyboardType);
+        return true;
+    }
+
+    // Minimal UTF-16 -> UTF-8 conversion, written for this file.
+    std::string Utf16ToUtf8(const UniChar *input, size_t length) {
+        std::string output;
+        for (size_t i = 0; i < length; i++) {
+            uint32_t codePoint = input[i];
+            if (codePoint >= 0xD800 && codePoint <= 0xDBFF && i + 1 < length) {
+                uint32_t low = input[i + 1];
+                if (low >= 0xDC00 && low <= 0xDFFF) {
+                    codePoint = 0x10000 + ((codePoint - 0xD800) << 10) + (low - 0xDC00);
+                    i++;
+                }
+            }
+            if (codePoint < 0x80) {
+                output += static_cast<char>(codePoint);
+            } else if (codePoint < 0x800) {
+                output += static_cast<char>(0xC0 | (codePoint >> 6));
+                output += static_cast<char>(0x80 | (codePoint & 0x3F));
+            } else if (codePoint < 0x10000) {
+                output += static_cast<char>(0xE0 | (codePoint >> 12));
+                output += static_cast<char>(0x80 | ((codePoint >> 6) & 0x3F));
+                output += static_cast<char>(0x80 | (codePoint & 0x3F));
+            } else {
+                output += static_cast<char>(0xF0 | (codePoint >> 18));
+                output += static_cast<char>(0x80 | ((codePoint >> 12) & 0x3F));
+                output += static_cast<char>(0x80 | ((codePoint >> 6) & 0x3F));
+                output += static_cast<char>(0x80 | (codePoint & 0x3F));
+            }
+        }
+        return output;
+    }
+
+    bool IsControlCharacter(UniChar character) {
+        return character < 0x20 || (character >= 0x7F && character <= 0x9F);
+    }
+
+    // Layout-translated character for a key press, or "" for keys with no
+    // printable translation. Runs on the JS thread inside the TSFN callback.
+    std::string TranslateKeyCode(CGKeyCode keyCode, CGEventFlags flags) {
+        EventModifiers carbonModifiers = 0;
+        if (flags & kCGEventFlagMaskShift) {
+            carbonModifiers |= shiftKey;
+        }
+        if (flags & kCGEventFlagMaskControl) {
+            carbonModifiers |= controlKey;
+        }
+        if (flags & kCGEventFlagMaskAlternate) {
+            carbonModifiers |= optionKey;
+        }
+        if (flags & kCGEventFlagMaskCommand) {
+            carbonModifiers |= cmdKey;
+        }
+        // UCKeyTranslate accepts the Carbon modifier bits shifted right by 8.
+        UInt32 modifierKeyState = (carbonModifiers >> 8) & 0xFF;
+
+        std::lock_guard<std::mutex> lock(layoutCache.mutex);
+        if (!EnsureLayoutCacheLocked()) {
+            return std::string();
+        }
+
+        UInt32 deadKeyState = 0;
+        UniChar character = 0;
+        UniCharCount charCount = 0;
+        OSStatus status =
+          UCKeyTranslate(layoutCache.layout, static_cast<UInt16>(keyCode), kUCKeyActionDown,
+                         modifierKeyState, layoutCache.keyboardType, kUCKeyTranslateNoDeadKeysBit,
+                         &deadKeyState, 1, &charCount, &character);
+        if (status != noErr || charCount != 1 || IsControlCharacter(character)) {
+            return std::string();
+        }
+        return Utf16ToUtf8(&character, 1);
+    }
+
+    // TSFN callback. Runs on the JS thread; owns `data`.
+    void DispatchKeyEvent(Napi::Env env, Napi::Function dispatch, KeyEventData *data) {
+        std::unique_ptr<KeyEventData> event(data);
+
+        Napi::Object raw = Napi::Object::New(env);
+        raw.Set("keyCode", Napi::Number::New(env, event->keyCode));
+        raw.Set("extended", Napi::Boolean::New(env, false));  // always false on macOS
+        raw.Set("state", Napi::String::New(env, event->keyUp ? "up" : "down"));
+        raw.Set("repeat", Napi::Boolean::New(env, event->repeat));
+        raw.Set("character",
+                Napi::String::New(env, TranslateKeyCode(event->keyCode, event->flags)));
+
+        dispatch.Call({raw});
+        if (env.IsExceptionPending()) {
+            // A throwing dispatch must not escape the TSFN callback; there is no
+            // JS frame above it to catch the exception.
+            env.GetAndClearPendingException();
+            return;
+        }
+    }
+
+    // Event-tap callback. Runs on the native thread's run loop and must return
+    // immediately: copy the event data by value, hand it to the TSFN, return.
+    CGEventRef CGEventCallback(CGEventTapProxy proxy, CGEventType type, CGEventRef event,
+                               void *refcon) {
+        TsfnContext *context = static_cast<TsfnContext *>(refcon);
+
+        if (type == kCGEventTapDisabledByTimeout || type == kCGEventTapDisabledByUserInput) {
+            if (context->eventTap != nullptr) {
+                CGEventTapEnable(context->eventTap, true);
+            }
+            return event;
+        }
+        if (type != kCGEventKeyDown && type != kCGEventKeyUp && type != kCGEventFlagsChanged) {
+            return event;
+        }
+
+        CGKeyCode keyCode =
+          static_cast<CGKeyCode>(CGEventGetIntegerValueField(event, kCGKeyboardEventKeycode));
+
+        bool keyUp = false;
+        if (type == kCGEventKeyUp) {
+            keyUp = true;
+        } else if (type == kCGEventFlagsChanged) {
+            if (context->pressedModifiers.count(keyCode) > 0) {
+                context->pressedModifiers.erase(keyCode);
+                keyUp = true;
+            } else {
+                context->pressedModifiers.insert(keyCode);
+            }
+        }
+        bool repeat = type == kCGEventKeyDown &&
+                      CGEventGetIntegerValueField(event, kCGKeyboardEventAutorepeat) != 0;
+
+        KeyEventData *data = new KeyEventData{keyCode, CGEventGetFlags(event), keyUp, repeat};
+        napi_status status = tsfn.NonBlockingCall(data, DispatchKeyEvent);
+        if (status == napi_queue_full) {
+            // NAPI's internal queue cannot evict the oldest entry, so drop the
+            // incoming event and count it.
+            delete data;
+            droppedEvents.fetch_add(1, std::memory_order_relaxed);
+        } else if (status != napi_ok) {
+            delete data;
+        }
+        return event;
+    }
+
+    void NativeThreadMain(TsfnContext *context) {
+        context->runLoop = CFRunLoopGetCurrent();
+
+        CGEventMask eventMask = CGEventMaskBit(kCGEventKeyDown) | CGEventMaskBit(kCGEventKeyUp) |
+                                CGEventMaskBit(kCGEventFlagsChanged);
+        // A passive listen-only tap is tried first because it can never swallow
+        // keystrokes. The fallback to an active tap exists because libuiohook
+        // cites its bug #22 against listen-only taps; it stays until a run on a
+        // Mac proves listen-only works.
+        CFMachPortRef eventTap =
+          CGEventTapCreate(kCGSessionEventTap, kCGHeadInsertEventTap, kCGEventTapOptionListenOnly,
+                           eventMask, CGEventCallback, context);
+        if (eventTap == nullptr) {
+            eventTap =
+              CGEventTapCreate(kCGSessionEventTap, kCGHeadInsertEventTap, kCGEventTapOptionDefault,
+                               eventMask, CGEventCallback, context);
+        }
+        if (eventTap == nullptr) {
+            context->tapCreated.set_value(false);
+            return;
+        }
+        context->eventTap = eventTap;
+
+        CFRunLoopSourceRef runLoopSource =
+          CFMachPortCreateRunLoopSource(kCFAllocatorDefault, eventTap, 0);
+        CFRunLoopAddSource(context->runLoop, runLoopSource, kCFRunLoopCommonModes);
+        CGEventTapEnable(eventTap, true);
+
+        context->tapCreated.set_value(true);
+        CFRunLoopRun();
+
+        CGEventTapEnable(eventTap, false);
+        CFRunLoopRemoveSource(context->runLoop, runLoopSource, kCFRunLoopCommonModes);
+        CFMachPortInvalidate(eventTap);
+        CFRelease(runLoopSource);
+        CFRelease(eventTap);
+        context->eventTap = nullptr;
+    }
+
+    // The finalizer owns thread shutdown: stop the run loop, join, delete the
+    // context. Runs when the TSFN's thread count reaches zero.
+    void FinalizerCallback(Napi::Env env, void *finalizeData, TsfnContext *context) {
+        if (context->runLoop != nullptr) {
+            CFRunLoopStop(context->runLoop);
+        }
+        if (context->nativeThread.joinable()) {
+            context->nativeThread.join();
+        } else {
+            std::cerr << "Failed to join nativeThread!" << std::endl;
+        }
+        ClearLayoutCache();
+        delete context;
+    }
+
+    // Release the TSFN. Safe to call when never started and when already stopped.
+    void ReleaseTSFN() {
+        std::lock_guard<std::mutex> lock(tsfnMutex);
+        if (tsfn) {
+            napi_status status = tsfn.Release();
+            if (status != napi_ok) {
+                std::cerr << "Failed to release the TSFN!" << std::endl;
+            }
+            tsfn = NULL;
+        }
+    }
+
+}  // namespace
+
+// Trigger the JS callback when a key is pressed or released.
+// dispatch: ({ keyCode, extended, state, repeat, character }) => void
 void Start(const Napi::CallbackInfo &info) {
     Napi::Env env = info.Env();
 
-    // Stop if already running
+    if (info.Length() < 1 || !info[0].IsFunction()) {
+        Napi::TypeError::New(env, "keylogger.start(dispatch): dispatch must be a function")
+          .ThrowAsJavaScriptException();
+        return;
+    }
+
+    // Calling start twice is prevented by the JS wrapper; release any
+    // previous TSFN first anyway.
     ReleaseTSFN();
 
-    // Construct context data
-    auto contextData = new TsfnContext(env);
+    auto *contextData = new TsfnContext();
+    std::future<bool> tapCreated = contextData->tapCreated.get_future();
 
     // Create a ThreadSafeFunction
     tsfn = Napi::ThreadSafeFunction::New(
       env,
       info[0].As<Napi::Function>(),  // JavaScript function called asynchronously
       "Keyboard Events",             // Name
-      0,                             // Unlimited queue
+      1024,                          // Bounded queue; overflow is dropped and counted
       1,                             // Only one thread will use this initially
       contextData,                   // Context that can be accessed by Finalizer
       FinalizerCallback,             // Finalizer used to clean threads up
       (void *)nullptr                // Finalizer data
     );
 
-    contextData->nativeThread = std::thread([contextData] {
-        modifiers.clear();
+    contextData->nativeThread = std::thread(NativeThreadMain, contextData);
 
-        auto CGEventCallback = [](CGEventTapProxy proxy, CGEventType type, CGEventRef event,
-                                  void *refcon) {
-            if (type != kCGEventKeyDown && type != kCGEventKeyUp && type != kCGEventFlagsChanged) {
-                return event;
-            }
-
-            CGKeyCode keyCode =
-              (CGKeyCode)CGEventGetIntegerValueField(event, kCGKeyboardEventKeycode);
-
-            // get key direction
-            bool isKeyUp = false;
-            if (type == kCGEventKeyUp) {
-                isKeyUp = true;
-            } else if (type == kCGEventFlagsChanged) {
-                std::map<int, bool>::iterator iter = modifiers.find(keyCode);
-                if (iter == modifiers.end()) {
-                    // not found
-                    modifiers[keyCode] = true;
-                } else {
-                    // found
-                    modifiers.erase(keyCode);
-                    isKeyUp = true;
-                }
-            }
-
-            if (!tsfn)
-                return event;
-
-            napi_status status = tsfn.BlockingCall([=](Napi::Env env, Napi::Function jsCallback) {
-                jsCallback.Call({Napi::String::New(env, ConvertKeyCodeToString(keyCode)),
-                                 Napi::Boolean::New(env, isKeyUp),
-                                 Napi::Number::New(env, keyCode)});
-            });
-            if (status != napi_ok) {
-                std::cerr << "Failed to execute BlockingCall!" << std::endl;
-            }
-
-            return event;
-        };
-
-        CGEventMask eventMask = (CGEventMaskBit(kCGEventKeyDown) | CGEventMaskBit(kCGEventKeyUp) |
-                                 CGEventMaskBit(kCGEventFlagsChanged));
-        CFMachPortRef eventTap =
-          CGEventTapCreate(kCGSessionEventTap, kCGHeadInsertEventTap, kCGEventTapOptionDefault,
-                           eventMask, CGEventCallback, NULL);
-
-        if (!eventTap) {
-            std::cerr << "Failed to create event tap" << std::endl;
-            return;
-        }
-
-        CFRunLoopSourceRef runLoopSource =
-          CFMachPortCreateRunLoopSource(kCFAllocatorDefault, eventTap, 0);
-        CFRunLoopAddSource(CFRunLoopGetCurrent(), runLoopSource, kCFRunLoopCommonModes);
-        CGEventTapEnable(eventTap, true);
-
-        NSRunLoop *theRL = [NSRunLoop currentRunLoop];
-        while (contextData->shouldNativeThreadKeepRunning &&
-               [theRL runMode:NSDefaultRunLoopMode
-                   beforeDate:[NSDate dateWithTimeInterval:0.2 sinceDate:[NSDate date]]])
-            ;
-    });
+    if (!tapCreated.get()) {
+        // The finalizer joins the (already exited) thread and deletes the
+        // context before the throw.
+        ReleaseTSFN();
+        Napi::Error::New(env,
+                         "keylogger: failed to create a CGEventTap; grant the app assistive access "
+                         "(Accessibility / Input Monitoring) in System Settings")
+          .ThrowAsJavaScriptException();
+        return;
+    }
 }
 
 void Stop(const Napi::CallbackInfo &info) {
     ReleaseTSFN();
 }
 
-void ReleaseTSFN() {
-    if (tsfn) {
-        // Release the TSFN
-        napi_status status = tsfn.Release();
-        if (status != napi_ok) {
-            std::cerr << "Failed to release the TSFN!" << std::endl;
-        }
-        tsfn = NULL;
-    }
-}
-
-std::string ConvertKeyCodeToText(int mac_key_code) {
-    TISInputSourceRef source = TISCopyCurrentKeyboardInputSource();
-    CFDataRef layout_data =
-      static_cast<CFDataRef>((TISGetInputSourceProperty(source, kTISPropertyUnicodeKeyLayoutData)));
-    if (!layout_data) {
-        // TISGetInputSourceProperty returns null with  Japanese keyboard layout.
-        // Using TISCopyCurrentKeyboardLayoutInputSource to fix NULL return.
-        source = TISCopyCurrentKeyboardLayoutInputSource();
-        layout_data = static_cast<CFDataRef>(
-          (TISGetInputSourceProperty(source, kTISPropertyUnicodeKeyLayoutData)));
-        if (!layout_data) {
-            // https://developer.apple.com/library/mac/documentation/TextFonts/Reference/TextInputSourcesReference/#//apple_ref/c/func/TISGetInputSourceProperty
-            return std::string();
-        }
-    }
-
-    const UCKeyboardLayout *keyboardLayout =
-      reinterpret_cast<const UCKeyboardLayout *>(CFDataGetBytePtr(layout_data));
-
-    int mac_modifiers = 0;
-
-    // Convert EventRecord modifiers to format UCKeyTranslate accepts. See docs
-    // on UCKeyTranslate for more info.
-    UInt32 modifier_key_state = (mac_modifiers >> 8) & 0xFF;
-
-    UInt32 dead_key_state = 0;
-    UniCharCount char_count = 0;
-    UniChar character = 0;
-    OSStatus status = UCKeyTranslate(
-      keyboardLayout, static_cast<UInt16>(mac_key_code), kUCKeyActionDown, modifier_key_state,
-      LMGetKbdLast(), kUCKeyTranslateNoDeadKeysBit, &dead_key_state, 1, &char_count, &character);
-
-    bool isDeadKey = false;
-    if (status == noErr && char_count == 0 && dead_key_state != 0) {
-        isDeadKey = true;
-        status = UCKeyTranslate(keyboardLayout, static_cast<UInt16>(mac_key_code), kUCKeyActionDown,
-                                modifier_key_state, LMGetKbdLast(), kUCKeyTranslateNoDeadKeysBit,
-                                &dead_key_state, 1, &char_count, &character);
-    }
-
-    if (status == noErr && char_count == 1 && !std::iscntrl(character)) {
-        wchar_t value = character;
-        return vscode_keyboard::UTF16toUTF8(&value, 1);
-    }
-    return std::string();
-}
-
-// Try to match web values
-// https://developer.mozilla.org/en-US/docs/Web/API/KeyboardEvent/key/Key_Values
-std::string ConvertKeyCodeToString(int key_stroke) {
-    switch ((int)key_stroke) {
-        case kVK_Option:
-        case kVK_RightOption:
-            return "Alt";
-        case kVK_CapsLock:
-            return "CapsLock";
-        case kVK_Control:
-        case kVK_RightControl:
-            return "Control";
-        case kVK_Function:
-            return "Fn";
-        case kVK_Command:
-        case kVK_RightCommand:
-            return "Meta";
-        case kVK_Shift:
-        case kVK_RightShift:
-            return "Shift";
-        case kVK_Return:
-        case kVK_ANSI_KeypadEnter:
-            return "Enter";
-        case kVK_Tab:
-            return "Tab";
-        case kVK_Space:
-            return "Spacebar";
-        case kVK_DownArrow:
-            return "ArrowDown";
-        case kVK_LeftArrow:
-            return "ArrowLeft";
-        case kVK_RightArrow:
-            return "ArrowRight";
-        case kVK_UpArrow:
-            return "ArrowUp";
-        case kVK_End:
-            return "End";
-        case kVK_Home:
-            return "Home";
-        case kVK_PageDown:
-            return "PageDown";
-        case kVK_PageUp:
-            return "PageUp";
-        case kVK_Delete:
-            return "Backspace";
-        case kVK_ANSI_KeypadClear:
-            return "Clear";
-        case kVK_ForwardDelete:
-            return "Delete";
-        case kVK_Escape:
-            return "Escape";
-        case kVK_Help:
-            return "Help";
-        case kVK_F1:
-            return "F1";
-        case kVK_F2:
-            return "F2";
-        case kVK_F3:
-            return "F3";
-        case kVK_F4:
-            return "F4";
-        case kVK_F5:
-            return "F5";
-        case kVK_F6:
-            return "F6";
-        case kVK_F7:
-            return "F7";
-        case kVK_F8:
-            return "F8";
-        case kVK_F9:
-            return "F9";
-        case kVK_F10:
-            return "F10";
-        case kVK_F11:
-            return "F11";
-        case kVK_F12:
-            return "F12";
-        case kVK_F13:
-            return "F13";
-        case kVK_F14:
-            return "F14";
-        case kVK_F15:
-            return "F15";
-        case kVK_F16:
-            return "F16";
-        case kVK_F17:
-            return "F17";
-        case kVK_F18:
-            return "F18";
-        case kVK_F19:
-            return "F19";
-        case kVK_F20:
-            return "F20";
-        case kVK_ANSI_KeypadDecimal:
-        case kVK_JIS_KeypadComma:
-            return ".";
-        case kVK_ANSI_KeypadMultiply:
-            return "*";
-        case kVK_ANSI_KeypadPlus:
-            return "+";
-        case kVK_ANSI_KeypadDivide:
-            return "/";
-        case kVK_ANSI_KeypadMinus:
-            return "-";
-        default:
-            if (key_stroke >= 0x52 && key_stroke <= 0x5C) {
-                return std::to_string(key_stroke - 0x52);
-            } else {
-                return ConvertKeyCodeToText(key_stroke);
-            }
-    }
-}
-
-void FinalizerCallback(Napi::Env env, void *finalizeData, TsfnContext *context) {
-    context->shouldNativeThreadKeepRunning = NO;
-    if (context->nativeThread.joinable()) {
-        context->nativeThread.join();
-    } else {
-        std::cerr << "Failed to join nativeThread!" << std::endl;
-    }
-
-    delete context;
-}
-
 Napi::Object Init(Napi::Env env, Napi::Object exports) {
+    CFNotificationCenterAddObserver(CFNotificationCenterGetDistributedCenter(), nullptr,
+                                    InputSourceChangedCallback,
+                                    kTISNotifySelectedKeyboardInputSourceChanged, nullptr,
+                                    CFNotificationSuspensionBehaviorDeliverImmediately);
+
     exports.Set(Napi::String::New(env, "start"), Napi::Function::New(env, Start));
     exports.Set(Napi::String::New(env, "stop"), Napi::Function::New(env, Stop));
     return exports;

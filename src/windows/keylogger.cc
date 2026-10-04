@@ -1,242 +1,270 @@
 #include <Windows.h>
 #include <napi.h>
 
-#include <iostream>
-#include <sstream>
+#include <atomic>
+#include <cctype>
+#include <cstdint>
+#include <future>
+#include <mutex>
+#include <stdexcept>
 #include <string>
 #include <thread>
+#include <unordered_set>
+#include <utility>
 
-// The TSFN is used to bridge the C++ world and the JS world
-Napi::ThreadSafeFunction tsfn;
+// One global TSFN bridging the native hook thread and the JS thread. All
+// access is synchronized through g_tsfnMutex: the hook callback enqueues
+// events, Start() replaces it, and ReleaseTSFN() releases it.
+Napi::ThreadSafeFunction g_tsfn;
+std::mutex g_tsfnMutex;
+
+// Events dropped because the bounded TSFN queue was full. The N-API queue
+// cannot evict the oldest entry, so the incoming event is dropped and counted
+// here instead of stalling keyboard input.
+std::atomic<uint64_t> g_droppedEvents{0};
 
 // Data structure representing our thread-safe function context.
 struct TsfnContext {
-    TsfnContext(Napi::Env env){};
+    TsfnContext(Napi::Env env) {
+    }
 
     std::thread nativeThread;
+    HHOOK hook = NULL;
 };
 
-// custom message sent to the native thread to signal it to quit
+// A single keyboard event, copied by value out of KBDLLHOOKSTRUCT on the hook
+// thread and heap-allocated so it survives until the JS thread dequeues it.
+struct KeyEventData {
+    DWORD vkCode;
+    bool extended;
+    bool up;
+    bool repeat;
+};
+
+// Custom message posted to the native thread to signal it to quit.
 const UINT STOP_MESSAGE = WM_USER + 1;
 
-// variable to store the HANDLE to the hook. Don't declare it anywhere else then
-// globally or you will get problems since every function uses this variable.
-HHOOK _hook;
-
-// This struct contains the data received by the hook callback. As you see in
-// the callback function it contains the thing you will need: vkCode = virtual
-// key code.
-KBDLLHOOKSTRUCT kbdStruct;
-
-void ReleaseTSFN();
-std::string ConvertKeyCodeToString(int key_stroke);
 std::string GetLastErrorAsString();
+void ReleaseTSFN();
+LRESULT CALLBACK LowLevelKeyboardProc(int nCode, WPARAM wParam, LPARAM lParam);
+void NativeThreadMain(TsfnContext *context, std::promise<void> hookInstalled);
+void DispatchKeyEvent(Napi::Env env, Napi::Function jsCallback, KeyEventData *event);
+std::string TranslateCharacter(DWORD vkCode);
 
 // The thread-safe function finalizer callback. This callback executes
 // at destruction of thread-safe function, taking as arguments the finalizer
 // data and threadsafe-function context.
 void FinalizerCallback(Napi::Env env, void *finalizeData, TsfnContext *context);
 
-// Called from JS with a callback as an argument. It should call the JS callback
-// from inside the native thread when reciving a keyboard input event
-// jsCallback: (key: string, isKeyUp: boolean) => void
+// Called from JS with a dispatch function as an argument. Installs a low-level
+// keyboard hook on a dedicated native thread and reports every keyboard event
+// to the dispatch function asynchronously via the TSFN, as one object:
+// { keyCode, extended, state, repeat, character }.
 void Start(const Napi::CallbackInfo &info) {
     Napi::Env env = info.Env();
 
-    // Stop if already running
+    if (info.Length() < 1 || !info[0].IsFunction()) {
+        Napi::TypeError::New(env, "keylogger: start(dispatch) requires a function argument")
+          .ThrowAsJavaScriptException();
+        return;
+    }
+
+    // Stop a previous listener first rather than corrupting its state. The JS
+    // wrapper already prevents calling start() while listening.
     ReleaseTSFN();
 
     // Construct context data
     auto contextData = new TsfnContext(env);
 
     // Create a ThreadSafeFunction
-    tsfn = Napi::ThreadSafeFunction::New(
-      env,
-      info[0].As<Napi::Function>(),  // JavaScript function called asynchronously
-      "Keyboard Events",             // Name
-      0,                             // Unlimited queue
-      1,                             // Only one thread will use this initially
-      contextData,                   // Context that can be accessed by Finalizer
-      FinalizerCallback,             // Finalizer used to clean threads up
-      (void *)nullptr                // Finalizer data
-    );
+    {
+        std::lock_guard<std::mutex> lock(g_tsfnMutex);
+        g_tsfn = Napi::ThreadSafeFunction::New(
+          env,
+          info[0].As<Napi::Function>(),  // JavaScript function called asynchronously
+          "Keyboard Events",             // Name
+          1024,                          // Bounded queue; excess events are dropped
+          1,                             // Only one thread will use this initially
+          contextData,                   // Context that can be accessed by Finalizer
+          FinalizerCallback,             // Finalizer used to clean threads up
+          (void *)nullptr                // Finalizer data
+        );
+    }
+
+    std::promise<void> hookPromise;
+    std::future<void> hookFuture = hookPromise.get_future();
 
     // Create a native thread with its own message loop which is required to
     // attach low level keyboard hooks in order not to block the main thread
-    contextData->nativeThread = std::thread([] {
-        // This is the callback function. Consider it the event that is raised when,
-        // in this case, a key is pressed or released.
-        static auto HookCallback = [](int nCode, WPARAM wParam, LPARAM lParam) -> LRESULT {
-            try {
-                if (nCode >= 0 && tsfn) {
-                    // the action is valid: HC_ACTION and tsfn is not released.
+    try {
+        contextData->nativeThread =
+          std::thread(NativeThreadMain, contextData, std::move(hookPromise));
+    } catch (const std::system_error &e) {
+        ReleaseTSFN();  // the finalizer deletes contextData
+        Napi::Error::New(env, std::string("keylogger: failed to start hook thread: ") + e.what())
+          .ThrowAsJavaScriptException();
+        return;
+    }
 
-                    // lParam is the pointer to the struct containing the data needed,
-                    // so cast and assign it to kdbStruct.
-                    kbdStruct = *((KBDLLHOOKSTRUCT *)lParam);
-
-                    // call the JS callback with the key input value and type
-                    napi_status status =
-                      tsfn.BlockingCall([=](Napi::Env env, Napi::Function jsCallback) {
-                          jsCallback.Call(
-                            {Napi::String::New(env, ConvertKeyCodeToString(kbdStruct.vkCode)),
-                             Napi::Boolean::New(env, wParam == WM_KEYUP || wParam == WM_SYSKEYUP),
-                             Napi::Number::New(env, kbdStruct.vkCode)});
-                      });
-                    if (status != napi_ok) {
-                        std::cerr << "Failed to execute BlockingCall!" << std::endl;
-                    }
-                }
-            } catch (...) {
-                std::cerr << "Something went wrong while handling the key event" << std::endl;
-            }
-
-            // call the next hook in the hook chain. This is nessecary or your hook
-            // chain will break and the hook stops
-            return CallNextHookEx(_hook, nCode, wParam, lParam);
-        };
-
-        // Set the hook and set it to use the callback function above
-        // WH_KEYBOARD_LL means it will set a low level keyboard hook. More
-        // information about it at MSDN. The last 2 parameters are NULL, 0 because
-        // the callback function is in the same thread and window as the function
-        // that sets and releases the hook.
-        if (!(_hook = SetWindowsHookEx(WH_KEYBOARD_LL, HookCallback, NULL, 0))) {
-            std::cerr << "Failed to install hook!" << std::endl;
+    // The hook is installed on the native thread; wait for the outcome so a
+    // failed install surfaces as a JS exception thrown by start().
+    try {
+        hookFuture.get();
+    } catch (const std::exception &e) {
+        // The native thread already exited after failing to install the hook.
+        if (contextData->nativeThread.joinable()) {
+            contextData->nativeThread.join();
         }
-
-        // Create a message loop
-        MSG msg;
-        BOOL bRet;
-        while ((bRet = GetMessage(&msg, NULL, 0, 0)) != 0) {
-            if (bRet == -1) {
-                // handle the error and possibly exit
-                std::cerr << "Some error occurred in the message loop" << std::endl;
-            } else if (msg.message == STOP_MESSAGE) {
-                PostQuitMessage(0);
-            } else {
-                TranslateMessage(&msg);
-                DispatchMessage(&msg);
-            }
-        }
-    });
+        ReleaseTSFN();  // the finalizer deletes contextData
+        Napi::Error::New(env, e.what()).ThrowAsJavaScriptException();
+        return;
+    }
 }
 
-// Called from JS to release the TSFN and stop listening to keyboard events
+// Called from JS to release the TSFN and stop listening to keyboard events.
+// Safe when start() was never called and safe to call twice.
 void Stop(const Napi::CallbackInfo &info) {
     ReleaseTSFN();
 }
 
-// Release the TSFN
+// Release the TSFN. Idempotent: does nothing when no listener is active. The
+// finalizer (see FinalizerCallback) tears down the native thread and context.
 void ReleaseTSFN() {
-    if (tsfn) {
-        napi_status status = tsfn.Release();
-        if (status != napi_ok) {
-            std::cerr << "Failed to release the TSFN!" << std::endl;
-        }
-        tsfn = NULL;
+    std::lock_guard<std::mutex> lock(g_tsfnMutex);
+    if (g_tsfn) {
+        napi_status status = g_tsfn.Release();
+        (void)status;  // nothing actionable here; the finalizer still runs
+        g_tsfn = nullptr;
     }
 }
 
-// Convert vkeyCode to string that matches these browser values
-// https://developer.mozilla.org/en-US/docs/Web/API/KeyboardEvent/key/Key_Values
-std::string ConvertKeyCodeToString(int key_stroke) {
-    if ((key_stroke == 1) || (key_stroke == 2)) {
-        return "";  // ignore mouse clicks
+// Body of the dedicated native thread. Installs the hook, reports the outcome
+// to Start() through the promise, then runs the message loop that
+// WH_KEYBOARD_LL requires until STOP_MESSAGE arrives. Unhooks before exiting —
+// Microsoft requires this and 0.0.4 leaked the hook.
+void NativeThreadMain(TsfnContext *context, std::promise<void> hookInstalled) {
+    // Set the hook and set it to use the callback function above.
+    // WH_KEYBOARD_LL sets a low level keyboard hook. The last 2 parameters are
+    // NULL, 0 because the callback function is in the same thread as the
+    // function that sets and releases the hook.
+    context->hook = SetWindowsHookEx(WH_KEYBOARD_LL, LowLevelKeyboardProc, NULL, 0);
+    if (context->hook == NULL) {
+        std::string message =
+          "keylogger: SetWindowsHookEx(WH_KEYBOARD_LL) failed: " + GetLastErrorAsString();
+        hookInstalled.set_exception(std::make_exception_ptr(std::runtime_error(message)));
+        return;
+    }
+    hookInstalled.set_value();
+
+    // Create a message loop
+    MSG msg;
+    BOOL bRet;
+    while ((bRet = GetMessage(&msg, NULL, 0, 0)) != 0) {
+        if (bRet == -1) {
+            break;  // GetMessage failed; fall through to unhook and exit
+        } else if (msg.message == STOP_MESSAGE) {
+            break;
+        } else {
+            TranslateMessage(&msg);
+            DispatchMessage(&msg);
+        }
     }
 
-    std::stringstream output;
+    UnhookWindowsHookEx(context->hook);
+    context->hook = NULL;
+}
 
-    switch (key_stroke) {
-        case VK_MENU:
-        case VK_LMENU:
-        case VK_RMENU:
-            output << "Alt";
-            break;
-        case VK_LWIN:
-        case VK_RWIN:
-            output << "Meta";
-            break;
-        case VK_BACK:
-            output << "Backspace";
-            break;
-        case VK_RETURN:
-            output << "Enter";
-            break;
-        case VK_SPACE:
-            output << "Spacebar";
-            break;
-        case VK_TAB:
-            output << "Tab";
-            break;
-        case VK_SHIFT:
-        case VK_LSHIFT:
-        case VK_RSHIFT:
-            output << "Shift";
-            break;
-        case VK_CONTROL:
-        case VK_LCONTROL:
-        case VK_RCONTROL:
-            output << "Control";
-            break;
-        case VK_ESCAPE:
-            output << "Escape";
-            break;
-        case VK_END:
-            output << "End";
-            break;
-        case VK_HOME:
-            output << "Home";
-            break;
-        case VK_LEFT:
-            output << "ArrowLeft";
-            break;
-        case VK_UP:
-            output << "ArrowUp";
-            break;
-        case VK_RIGHT:
-            output << "ArrowRight";
-            break;
-        case VK_DOWN:
-            output << "ArrowDown";
-            break;
-        case VK_CAPITAL:
-            output << "CapsLock";
-            break;
-        case VK_PRIOR:
-            output << "PageUp";
-            break;
-        case VK_NEXT:
-            output << "PageDown";
-            break;
-        case VK_DELETE:
-            output << "Delete";
-            break;
-        case VK_INSERT:
-            output << "Insert";
-            break;
-        case VK_SNAPSHOT:
-            output << "PrintScreen";
-            break;
-        case 190:
-        case 110:
-            output << ".";
-            break;
-        case 189:
-        case 109:
-            output << "-";
-            break;
-        default:
-            if (key_stroke >= VK_F1 && key_stroke <= VK_F20) {
-                output << "F" << (key_stroke - VK_F1 + 1);
-            } else {
-                // map virtual key according to keyboard layout
-                char key = MapVirtualKeyExA(key_stroke, MAPVK_VK_TO_CHAR, GetKeyboardLayout(0));
-                output << char(key);
+// Runs on the hook thread. Must return almost immediately: Microsoft silently
+// removes hooks that exceed LowLevelHooksTimeout, so there is no translation,
+// no I/O, and no blocking here — only a by-value copy of the event (the old
+// global KBDLLHOOKSTRUCT raced with the next event) and a non-blocking
+// enqueue.
+LRESULT CALLBACK LowLevelKeyboardProc(int nCode, WPARAM wParam, LPARAM lParam) {
+    if (nCode >= 0) {
+        const KBDLLHOOKSTRUCT *kbd = reinterpret_cast<const KBDLLHOOKSTRUCT *>(lParam);
+
+        auto *event = new KeyEventData();
+        event->vkCode = kbd->vkCode;
+        event->extended = (kbd->flags & LLKHF_EXTENDED) != 0;
+        event->up = (wParam == WM_KEYUP || wParam == WM_SYSKEYUP);
+
+        // WH_KEYBOARD_LL carries no repeat bit; a key down for a vkCode that is
+        // already down is an auto-repeat. The set is thread_local, so it lives
+        // on the hook thread and is discarded when the thread exits.
+        static thread_local std::unordered_set<DWORD> downKeys;
+        if (event->up) {
+            downKeys.erase(event->vkCode);
+            event->repeat = false;
+        } else {
+            event->repeat = !downKeys.insert(event->vkCode).second;
+        }
+
+        std::lock_guard<std::mutex> lock(g_tsfnMutex);
+        if (g_tsfn) {
+            napi_status status = g_tsfn.NonBlockingCall(event, DispatchKeyEvent);
+            if (status != napi_ok) {
+                // napi_queue_full: the bounded queue cannot evict the oldest
+                // entry, so drop the incoming event and count it. Any other
+                // error means the TSFN is closing; drop silently. Either way,
+                // never stall keyboard input.
+                if (status == napi_queue_full) {
+                    ++g_droppedEvents;
+                }
+                delete event;
             }
+        } else {
+            delete event;
+        }
     }
 
-    return output.str();
+    // Call the next hook in the hook chain. This is necessary or the hook chain
+    // breaks and the hook stops. The first parameter is ignored and may be NULL.
+    return CallNextHookEx(NULL, nCode, wParam, lParam);
+}
+
+// Runs on the JS thread once per queued event. Builds the event object,
+// translates the character (never do this on the hook thread), and invokes
+// the dispatch function.
+void DispatchKeyEvent(Napi::Env env, Napi::Function jsCallback, KeyEventData *event) {
+    if (event == nullptr) {
+        return;
+    }
+    if (env == nullptr) {
+        // The TSFN was destroyed with items still queued; nothing to call.
+        delete event;
+        return;
+    }
+
+    Napi::Object raw = Napi::Object::New(env);
+    raw.Set("keyCode", Napi::Number::New(env, event->vkCode));
+    raw.Set("extended", Napi::Boolean::New(env, event->extended));
+    raw.Set("state", Napi::String::New(env, event->up ? "up" : "down"));
+    raw.Set("repeat", Napi::Boolean::New(env, event->repeat));
+    raw.Set("character", Napi::String::New(env, TranslateCharacter(event->vkCode)));
+    delete event;
+
+    jsCallback.Call({raw});
+    if (env.IsExceptionPending()) {
+        // A JS exception thrown by the dispatch function must not escape into
+        // N-API internals; swallow it.
+        env.GetAndClearPendingException();
+    }
+}
+
+// Maps a virtual-key code to the keyboard layout's unshifted character, or ""
+// when the key has no printable translation. 1.0.0 limitation: there is no
+// shift-state translation (shift+1 reports "1", not "!"), and characters
+// outside the ANSI low byte are not produced.
+std::string TranslateCharacter(DWORD vkCode) {
+    UINT result = MapVirtualKeyExA(vkCode, MAPVK_VK_TO_CHAR, GetKeyboardLayout(0));
+    if (result == 0 || (result & 0x80000000u) != 0) {
+        return "";  // no translation, or a dead key (high bit set)
+    }
+    char c = static_cast<char>(result & 0xFF);
+    if (std::iscntrl(static_cast<unsigned char>(c))) {
+        return "";
+    }
+    return std::string(1, c);
 }
 
 // Returns the last Win32 error, in string format. Returns an empty string if
@@ -268,18 +296,17 @@ std::string GetLastErrorAsString() {
     return message;
 }
 
+// The TSFN finalizer. Runs on the JS thread when the TSFN is released: posts
+// the quit message to the native thread's message loop, joins the thread (the
+// thread itself calls UnhookWindowsHookEx before exiting, as Microsoft
+// requires), and deletes the context.
 void FinalizerCallback(Napi::Env env, void *finalizeData, TsfnContext *context) {
-    DWORD threadId = GetThreadId(context->nativeThread.native_handle());
-    if (threadId == 0) {
-        std::cerr << "GetThreadId failed: " << GetLastErrorAsString() << std::endl;
-    }
-
-    PostThreadMessageA(threadId, STOP_MESSAGE, NULL, NULL);
-
     if (context->nativeThread.joinable()) {
+        DWORD threadId = GetThreadId(context->nativeThread.native_handle());
+        if (threadId != 0) {
+            PostThreadMessageA(threadId, STOP_MESSAGE, NULL, NULL);
+        }
         context->nativeThread.join();
-    } else {
-        std::cerr << "Failed to join nativeThread!" << std::endl;
     }
 
     delete context;

@@ -25,7 +25,12 @@
                 }],
                 ["OS=='linux'", {
                     "sources": ["src/linux/keylogger.cc"],
-                    "libraries": ["-levdev"]
+                    "include_dirs": [
+                        "<!@(pkg-config libevdev --cflags-only-I | sed s/-I//g)"
+                    ],
+                    "libraries": [
+                        "<!@(pkg-config libevdev --libs)"
+                    ]
                 }]
             ],
             "include_dirs": [

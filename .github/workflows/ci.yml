@@ -24,6 +24,13 @@ jobs:
       - name: Install libevdev headers
         if: runner.os == 'Linux'
         run: sudo apt-get update && sudo apt-get install --yes libevdev-dev
+      # windows-latest ships Visual Studio 2026. Node 22's npm 10 bundles
+      # node-gyp 11, which reports that install as an unknown version. npm 11.19
+      # bundles node-gyp 12.4, which the Node 24 job on this image already uses.
+      - name: Upgrade npm for Visual Studio 2026
+        if: runner.os == 'Windows' && matrix.node == 22
+        shell: bash
+        run: npm install --global npm@11.19.0
       - name: Install (compiles the addon)
         run: npm ci
       - name: Key table and API tests

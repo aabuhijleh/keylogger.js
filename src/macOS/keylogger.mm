@@ -114,14 +114,9 @@ namespace {
         layoutCache.source = source;
         layoutCache.layout =
           reinterpret_cast<const UCKeyboardLayout *>(CFDataGetBytePtr(layoutData));
-
-        SInt32 keyboardType = 0;
-        CFNumberRef typeNumber =
-          static_cast<CFNumberRef>(TISGetInputSourceProperty(source, kTISPropertyKeyboardType));
-        if (typeNumber != nullptr) {
-            CFNumberGetValue(typeNumber, kCFNumberSInt32Type, &keyboardType);
-        }
-        layoutCache.keyboardType = static_cast<UInt32>(keyboardType);
+        // kTISPropertyKeyboardType is not in the SDK. LMGetKbdType() is the
+        // keyboard type UCKeyTranslate expects.
+        layoutCache.keyboardType = LMGetKbdType();
         return true;
     }
 

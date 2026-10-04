@@ -71,7 +71,7 @@ evdev level, so `key` is the unshifted US value).
 | OS      | Mechanism                        | Permission required                                                                 |
 | ------- | -------------------------------- | ----------------------------------------------------------------------------------- |
 | macOS   | listen-only `CGEventTap`         | Assistive access: grant the app Accessibility / Input Monitoring in System Settings. |
-| Windows | per-user `WH_KEYBOARD_LL` hook   | None beyond the user session. The hook is always removed on `stop()`.                |
+| Windows | per-user `WH_KEYBOARD_LL` hook   | None beyond the user session. The hook is always removed on `stop()`. (Before 1.0, a slow callback could make Windows silently remove the hook; the callback now runs off the hook thread.) |
 | Linux   | read-only `libevdev` on `/dev/input/event*` | The user must be in group `input` (or have an equivalent ACL on the device nodes). Works under X11 and Wayland because evdev sits below the display server. |
 
 On Linux, add the user to the `input` group and log out and back in:
@@ -106,6 +106,8 @@ hook / event tap / device reads and frees the native resources.
   fails), Windows always calls `CallNextHookEx`, Linux only reads.
 - No promise API; events go to the callback you pass to `start`.
 - Linux `key` values are the unshifted US layout (no layout translation).
+- On Windows, `key` for printable keys is layout-translated but does not apply
+  Shift state (Shift+1 reports `key: "1"`); `code` is unaffected.
 - Holding a key down produces `"down"` events with `repeat: true`.
 
 ## Support matrix

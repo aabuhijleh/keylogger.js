@@ -5,6 +5,7 @@
 #include <cctype>
 #include <cstdint>
 #include <future>
+#include <iostream>
 #include <mutex>
 #include <stdexcept>
 #include <string>
@@ -25,11 +26,8 @@ std::atomic<uint64_t> g_droppedEvents{0};
 
 // Data structure representing our thread-safe function context.
 struct TsfnContext {
-    TsfnContext(Napi::Env env) {
-    }
-
     std::thread nativeThread;
-    HHOOK hook = NULL;
+    HHOOK hook = nullptr;
 };
 
 // A single keyboard event, copied by value out of KBDLLHOOKSTRUCT on the hook
@@ -46,6 +44,7 @@ const UINT STOP_MESSAGE = WM_USER + 1;
 
 std::string GetLastErrorAsString();
 void ReleaseTSFN();
+void ReportDroppedEvents();
 LRESULT CALLBACK LowLevelKeyboardProc(int nCode, WPARAM wParam, LPARAM lParam);
 void NativeThreadMain(TsfnContext *context, std::promise<void> hookInstalled);
 void DispatchKeyEvent(Napi::Env env, Napi::Function jsCallback, KeyEventData *event);
@@ -64,7 +63,7 @@ void Start(const Napi::CallbackInfo &info) {
     Napi::Env env = info.Env();
 
     if (info.Length() < 1 || !info[0].IsFunction()) {
-        Napi::TypeError::New(env, "keylogger: start(dispatch) requires a function argument")
+        Napi::TypeError::New(env, "keylogger.start(dispatch): dispatch must be a function")
           .ThrowAsJavaScriptException();
         return;
     }
@@ -74,7 +73,7 @@ void Start(const Napi::CallbackInfo &info) {
     ReleaseTSFN();
 
     // Construct context data
-    auto contextData = new TsfnContext(env);
+    auto contextData = new TsfnContext();
 
     // Create a ThreadSafeFunction
     {
@@ -125,6 +124,17 @@ void Start(const Napi::CallbackInfo &info) {
 // Safe when start() was never called and safe to call twice.
 void Stop(const Napi::CallbackInfo &info) {
     ReleaseTSFN();
+    ReportDroppedEvents();
+}
+
+// Surface the overflow count once per stop() instead of letting it accumulate
+// silently, then reset it for the next listener.
+void ReportDroppedEvents() {
+    uint64_t dropped = g_droppedEvents.exchange(0, std::memory_order_relaxed);
+    if (dropped > 0) {
+        std::cerr << "keylogger: dropped " << dropped
+                  << " keyboard events because the event queue was full" << std::endl;
+    }
 }
 
 // Release the TSFN. Idempotent: does nothing when no listener is active. The
@@ -133,7 +143,9 @@ void ReleaseTSFN() {
     std::lock_guard<std::mutex> lock(g_tsfnMutex);
     if (g_tsfn) {
         napi_status status = g_tsfn.Release();
-        (void)status;  // nothing actionable here; the finalizer still runs
+        if (status != napi_ok) {
+            std::cerr << "keylogger: failed to release the TSFN!" << std::endl;
+        }
         g_tsfn = nullptr;
     }
 }

@@ -28,12 +28,15 @@ jobs:
         run: npm ci
       - name: Key table and API tests
         run: npm test
-      - name: Smoke-load the addon
+      - name: Smoke-load the addon and the wrapper
         shell: bash
         run: |
           node -e "const a = require('node-gyp-build')(process.cwd()); \
             if (typeof a.start !== 'function' || typeof a.stop !== 'function') process.exit(1); \
             console.log('addon loads, exports start/stop');"
+          node -e "const k = require('./src/index.js'); \
+            if (typeof k.start !== 'function' || typeof k.stop !== 'function') process.exit(1); \
+            console.log('wrapper exports start/stop');"
       - name: Check native formatting
         if: runner.os == 'Linux'
         shell: bash
@@ -80,6 +83,9 @@ jobs:
             const a = require('node-gyp-build')(dir); \
             if (typeof a.start !== 'function' || typeof a.stop !== 'function') process.exit(1); \
             console.log('prebuild loads:', typeof a.start, typeof a.stop);"
+          node -e "const k = require('keylogger.js'); \
+            if (typeof k.start !== 'function' || typeof k.stop !== 'function') process.exit(1); \
+            console.log('installed wrapper exports start/stop');"
 
   release:
     name: semantic-release + npm stage publish

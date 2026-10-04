@@ -8,6 +8,7 @@
 #include <cerrno>
 #include <cstdint>
 #include <future>
+#include <iostream>
 #include <mutex>
 #include <string>
 #include <thread>
@@ -35,8 +36,6 @@ namespace {
 
     // Data structure representing our thread-safe function context.
     struct TsfnContext {
-        TsfnContext() {
-        }
         ~TsfnContext() {
             for (int fd : pipeFds) {
                 if (fd >= 0) {
@@ -63,6 +62,7 @@ namespace {
     };
 
     void FinalizerCallback(Napi::Env env, void *finalizeData, TsfnContext *context);
+    void ReportDroppedEvents();
 
     // Runs on the JS thread: build the event object and call the dispatch
     // function handed to start().
@@ -279,6 +279,17 @@ namespace {
     // Idempotent: safe when never started and safe to call twice.
     void Stop(const Napi::CallbackInfo &info) {
         ReleaseTsfn();
+        ReportDroppedEvents();
+    }
+
+    // Surface the overflow count once per stop() instead of letting it
+    // accumulate silently, then reset it for the next listener.
+    void ReportDroppedEvents() {
+        uint64_t dropped = droppedEvents.exchange(0, std::memory_order_relaxed);
+        if (dropped > 0) {
+            std::cerr << "keylogger: dropped " << dropped
+                      << " keyboard events because the event queue was full" << std::endl;
+        }
     }
 
     void FinalizerCallback(Napi::Env env, void *finalizeData, TsfnContext *context) {

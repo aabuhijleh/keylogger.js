@@ -160,6 +160,8 @@ const maps = {
   linux: new Map(),
 };
 
+// Windows virtual keys collide between Enter and NumpadEnter, so the Win32
+// map is keyed by vk * 2 + extended.
 for (const row of table) {
   const entry = { code: row.code, key: row.key };
   if (row.mac != null) maps.darwin.set(row.mac, entry);
@@ -167,7 +169,7 @@ for (const row of table) {
   if (row.win != null) {
     const vk = typeof row.win === "object" ? row.win.vk : row.win;
     const extended = typeof row.win === "object" && row.win.extended;
-    maps.win32.set(`${vk}:${extended ? 1 : 0}`, entry);
+    maps.win32.set(vk * 2 + (extended ? 1 : 0), entry);
   }
 }
 
@@ -183,7 +185,7 @@ function lookup(platform, nativeCode, extended) {
   const map = maps[platform];
   if (!map) return null;
   if (platform === "win32") {
-    return map.get(`${nativeCode}:${extended ? 1 : 0}`) || map.get(`${nativeCode}:0`) || null;
+    return map.get(nativeCode * 2 + (extended ? 1 : 0)) || map.get(nativeCode * 2) || null;
   }
   return map.get(nativeCode) || null;
 }

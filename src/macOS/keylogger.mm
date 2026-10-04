@@ -312,7 +312,7 @@ namespace {
         if (context->nativeThread.joinable()) {
             context->nativeThread.join();
         } else {
-            std::cerr << "Failed to join nativeThread!" << std::endl;
+            std::cerr << "keylogger: failed to join nativeThread!" << std::endl;
         }
         ClearLayoutCache();
         delete context;
@@ -324,9 +324,19 @@ namespace {
         if (tsfn) {
             napi_status status = tsfn.Release();
             if (status != napi_ok) {
-                std::cerr << "Failed to release the TSFN!" << std::endl;
+                std::cerr << "keylogger: failed to release the TSFN!" << std::endl;
             }
-            tsfn = NULL;
+            tsfn = nullptr;
+        }
+    }
+
+    // Surface the overflow count once per stop() instead of letting it
+    // accumulate silently, then reset it for the next listener.
+    void ReportDroppedEvents() {
+        uint64_t dropped = droppedEvents.exchange(0, std::memory_order_relaxed);
+        if (dropped > 0) {
+            std::cerr << "keylogger: dropped " << dropped
+                      << " keyboard events because the event queue was full" << std::endl;
         }
     }
 
@@ -378,6 +388,7 @@ void Start(const Napi::CallbackInfo &info) {
 
 void Stop(const Napi::CallbackInfo &info) {
     ReleaseTSFN();
+    ReportDroppedEvents();
 }
 
 Napi::Object Init(Napi::Env env, Napi::Object exports) {
